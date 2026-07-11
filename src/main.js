@@ -121,13 +121,15 @@ function surfaceTex(url, onload) {
     onload(t);
   }, undefined, () => {});
 }
-// per-vertex UVs for a ribbon built by buildRibbon (2 verts per step)
-function addRibbonUVs(mesh, uAcross, vMeters) {
+// per-vertex UVs for a ribbon built by buildRibbon (2 verts per step).
+// uStart/uEnd sample a horizontal band of the texture — insetting past the
+// baked white edge lines keeps the whole ribbon uniform tarmac.
+function addRibbonUVs(mesh, uStart, uEnd, vMeters) {
   const count = mesh.geometry.attributes.position.count;
   const uv = new Float32Array(count * 2);
   for (let i = 0; i <= N; i++) {
-    uv[i * 4 + 0] = 0;        uv[i * 4 + 1] = i * STEP / vMeters;
-    uv[i * 4 + 2] = uAcross;  uv[i * 4 + 3] = i * STEP / vMeters;
+    uv[i * 4 + 0] = uStart; uv[i * 4 + 1] = i * STEP / vMeters;
+    uv[i * 4 + 2] = uEnd;   uv[i * 4 + 3] = i * STEP / vMeters;
   }
   mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
 }
@@ -136,7 +138,9 @@ function addRibbonUVs(mesh, uAcross, vMeters) {
     const v = 0.155 + asphaltTone[i] * 0.05;
     return { r: v, g: v, b: v + 0.008 };
   });
-  addRibbonUVs(road, 1, 9);
+  // sample only the clean asphalt band (0.20–0.80), skipping the texture's
+  // baked-in white edge lines so the whole surface reads as uniform tar
+  addRibbonUVs(road, 0.20, 0.80, 9);
   surfaceTex('/textures/road.png', t => {
     road.material = new THREE.MeshStandardMaterial({ map: t, roughness: 0.95 });
   });
@@ -163,10 +167,7 @@ raceLine.material.transparent = true;
 raceLine.material.opacity = 0.85;
 scene.add(raceLine);
 
-// white edge lines
-const white = { r: 0.92, g: 0.92, b: 0.92 };
-scene.add(buildRibbon(i => HALF_W - 0.05, i => HALF_W - 0.30, 0.01, () => white));
-scene.add(buildRibbon(i => -(HALF_W - 0.30), i => -(HALF_W - 0.05), 0.01, () => white));
+// (white edge lines removed — track reads as uniform tarmac to the kerbs)
 
 // kerbs on corners (red/white stripes), placed where curvature is significant
 const KERB_THRESH = 0.0045;
@@ -1323,13 +1324,18 @@ function frame() {
   // uphill positive: tilt the view with the road; low-passed to keep the horizon steady
   slopeSm += ((ahead.y - info.y) / 6 - slopeSm) * (1 - Math.exp(-dt * 8));
   const slope = slopeSm;
-  let target;
+  let target, cockpitLook = null;
   if (camMode === 0) {
     target = new THREE.Vector3(state.x - fwdX * 8.5, info.y + 3.1 - slope * 3.5, state.z - fwdZ * 8.5);
   } else if (camMode === 1) {
-    // cockpit: helmet-cam framing — close behind the wheel, pitched
-    // slightly down so the wheel fills the lower half under the halo
-    target = new THREE.Vector3(state.x - fwdX * cfg.camBack, info.y + cfg.camUp, state.z - fwdZ * cfg.camBack);
+    // cockpit: the eye is BOLTED to the chassis frame (like a real onboard
+    // bolted to the halo), so through Eau Rouge's dive-and-climb the halo
+    // holds a constant distance instead of swinging into the lens. Position
+    // and look-point both ride the car's pitch; camera.up stays world-up so
+    // steering roll only nudges the frame sideways a hair, never rolls it.
+    car.updateMatrixWorld(true);
+    target = new THREE.Vector3(0, cfg.camUp, -cfg.camBack).applyMatrix4(car.matrixWorld);
+    cockpitLook = new THREE.Vector3(0, cfg.pitch, 14).applyMatrix4(car.matrixWorld);
   } else {
     // nose pod: the higher over-cockpit view
     target = new THREE.Vector3(state.x - fwdX * 0.15, info.y + 1.26, state.z - fwdZ * 0.15);
@@ -1343,9 +1349,11 @@ function frame() {
     camPos.y += (Math.random() - 0.5) * 0.12;
   }
   camera.position.copy(camPos);
-  // cockpit view looks dead level so the horizon sits mid-frame
-  const lookY = camMode === 1 ? cfg.pitch : 1.0; // cockpit pitch is user-tunable
-  camera.lookAt(state.x + fwdX * 14, info.y + lookY + slope * 14, state.z + fwdZ * 14);
+  if (cockpitLook) {
+    camera.lookAt(cockpitLook);
+  } else {
+    camera.lookAt(state.x + fwdX * 14, info.y + 1.0 + slope * 14, state.z + fwdZ * 14);
+  }
   camera.fov = (camMode === 0 ? 68 : camMode === 1 ? cfg.fov : 82) + Math.min(speed * 0.12, 14);
   camera.updateProjectionMatrix();
 
