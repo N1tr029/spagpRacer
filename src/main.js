@@ -2,8 +2,28 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import trackData from './track.json';
 import forestData from './forest.json';
+
+// base-relative asset root, so /public files resolve whether the game is served
+// from a domain root or a subpath (e.g. GitHub Pages /spagpRacer/)
+const ASSET = import.meta.env.BASE_URL;
+
+// touch device? drives the on-screen controls + a lighter render for phones
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+
+// graphics quality (Low avoids the heavy passes so phones don't crash):
+//   low    = direct render, no post/env/shadows/mirror, 1x pixels
+//   medium = bloom + colour grade + env + shadows (no SMAA, no mirror)
+//   high   = everything (+ SMAA anti-aliasing + rear-view mirror)
+const QUALITY = localStorage.getItem('ardennes.quality') || (IS_TOUCH ? 'low' : 'high');
+const USE_POST = QUALITY !== 'low', USE_SMAA = QUALITY === 'high', USE_REAR = QUALITY === 'high', USE_SHADOW = QUALITY !== 'low';
 
 // real OSM forest extent around Spa (landuse=forest), rasterised to a grid in
 // game coordinates — trees only grow where there's actually forest, so La Source
@@ -141,12 +161,12 @@ function pitInfo(x, z, hintK) {
 // Renderer / scene
 // ---------------------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, QUALITY === 'low' ? 1 : QUALITY === 'medium' ? 1.5 : (IS_TOUCH ? 1.6 : 2)));
 renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.enabled = USE_SHADOW;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;   // softer, less aliased contact shadows
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMappingExposure = 1.06;                // a touch darker; bloom adds the glow back
 const app = document.getElementById('app');
 app.innerHTML = ''; // drop any canvas from a previous module instance (HMR)
 app.appendChild(renderer.domElement);
@@ -159,17 +179,124 @@ scene.fog = new THREE.Fog(0x9dc0e6, 550, 4200);        // lighter haze, pushed b
 
 const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.3, 6000);
 
-const hemi = new THREE.HemisphereLight(0xd8e8ff, 0x42603a, 1.05);
+const hemi = new THREE.HemisphereLight(0xd8e8ff, 0x42603a, 0.6);   // lower: the env map now adds ambient fill
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xffe9c4, 2.0);
+const sun = new THREE.DirectionalLight(0xffe7bd, 2.15);
 sun.position.set(-350, 500, 200);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 50; sun.shadow.camera.far = 1400;
+sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.6;   // kill shadow acne / peter-panning
 const sc = 120;
 sun.shadow.camera.left = -sc; sun.shadow.camera.right = sc;
 sun.shadow.camera.top = sc; sun.shadow.camera.bottom = -sc;
 scene.add(sun); scene.add(sun.target);
+
+// Post-processing: a filmic bloom for sky/sun/kerb glow, then tone-map + sRGB.
+// A soft depth-vignette darkens the frame edges the way a broadcast lens does.
+let composer = null;
+if (USE_POST) {
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.7, 0.82));
+  composer.addPass(new OutputPass());
+  if (USE_SMAA) composer.addPass(new SMAAPass(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio()));
+  // colour grade: gentle contrast + saturation + broadcast vignette, applied to
+  // the tone-mapped image. This is what pulls the Ardennes greens out of the wash.
+  composer.addPass(new ShaderPass({
+    uniforms: { tDiffuse: { value: null }, contrast: { value: 1.11 }, saturation: { value: 1.22 }, vignette: { value: 0.85 } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+    fragmentShader: `
+      uniform sampler2D tDiffuse; uniform float contrast, saturation, vignette; varying vec2 vUv;
+      void main(){
+        vec4 c = texture2D(tDiffuse, vUv); vec3 col = c.rgb;
+        col = (col - 0.5) * contrast + 0.5;
+        float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col = mix(vec3(l), col, saturation);
+        vec2 uv = vUv - 0.5;
+        col *= clamp(1.0 - vignette * dot(uv, uv), 0.0, 1.0);
+        gl_FragColor = vec4(col, c.a);
+      }`,
+  }));
+}
+
+// Image-based lighting: a gradient sky/ground env so the glossy car body
+// catches real sky reflections (and everything gets softer ambient fill)
+if (USE_POST) {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const es = new THREE.Scene();
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 24, 16), new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    uniforms: { top: { value: new THREE.Color(0x3f7fce) }, mid: { value: new THREE.Color(0xc2d8ec) }, bot: { value: new THREE.Color(0x69804f) } },
+    vertexShader: 'varying vec3 vp; void main(){ vp = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'varying vec3 vp; uniform vec3 top, mid, bot; void main(){ float h = normalize(vp).y; vec3 c = h > 0.0 ? mix(mid, top, h) : mix(mid, bot, -h); gl_FragColor = vec4(c, 1.0); }',
+  }));
+  es.add(sky);
+  scene.environment = pmrem.fromScene(es).texture;
+  sky.geometry.dispose(); sky.material.dispose(); pmrem.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// Rear-view mirror: render the view behind the car into an offscreen target,
+// then draw it into a strip up top flipped left-right, like a real mirror
+// ---------------------------------------------------------------------------
+const RVW = 640, RVH = 180;
+let rearRT, rearCam, rvScene, rvCam, rearOn = true;
+if (USE_REAR) {
+  rearRT = new THREE.WebGLRenderTarget(RVW, RVH, { samples: 4 });
+  rearRT.texture.colorSpace = THREE.SRGBColorSpace;
+  rearCam = new THREE.PerspectiveCamera(64, RVW / RVH, 0.3, 2200);
+  rvScene = new THREE.Scene();
+  rvCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 2); rvCam.position.z = 1;
+  const rvQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2),
+    new THREE.MeshBasicMaterial({ map: rearRT.texture, depthTest: false, depthWrite: false, toneMapped: false }));
+  { const uv = rvQuad.geometry.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setX(i, 1 - uv.getX(i)); uv.needsUpdate = true; }  // flip U = mirror
+  rvScene.add(rvQuad);
+}
+const _rvEye = new THREE.Vector3(), _rvLook = new THREE.Vector3();
+function renderRearView() {
+  if (!USE_REAR) return;
+  const el = document.getElementById('rearview');
+  const show = rearOn && sess.mode !== 'menu' && !podiumActive && !state.pitFrozen
+    && !(sess.mode === 'race' && sess.phase === 'lights');
+  if (!show) { el.classList.remove('show'); return; }
+  el.classList.add('show');
+  car.updateMatrixWorld(true);
+  _rvEye.set(0, 1.85, -0.2).applyMatrix4(car.matrixWorld);      // above/behind the cockpit
+  _rvLook.set(0, 1.05, -32).applyMatrix4(car.matrixWorld);      // ~32 m back, angled down
+  rearCam.position.copy(_rvEye); rearCam.up.set(0, 1, 0); rearCam.lookAt(_rvLook);
+  renderer.setRenderTarget(rearRT); renderer.clear(); renderer.render(scene, rearCam); renderer.setRenderTarget(null);
+  const w = innerWidth, h = innerHeight;
+  const sw = Math.min(460, w * 0.42), sh = sw * RVH / RVW, sx = (w - sw) / 2, sy = h - sh - 54;
+  renderer.autoClear = false;
+  renderer.setViewport(sx, sy, sw, sh); renderer.setScissor(sx, sy, sw, sh); renderer.setScissorTest(true);
+  renderer.render(rvScene, rvCam);
+  renderer.setScissorTest(false); renderer.setViewport(0, 0, w, h); renderer.autoClear = true;
+}
+
+// Soft cloud billboards for sky depth (sprites always face the camera)
+{
+  const cc = document.createElement('canvas'); cc.width = 256; cc.height = 128;
+  const x2 = cc.getContext('2d');
+  for (const [bx, by, r] of [[128, 78, 56], [82, 84, 40], [174, 84, 40], [110, 62, 34], [150, 64, 34], [128, 90, 48]]) {
+    const grd = x2.createRadialGradient(bx, by, 4, bx, by, r);
+    // off-white and dim so the bloom pass reads them as soft cloud, not glare
+    grd.addColorStop(0, 'rgba(236,242,250,0.62)'); grd.addColorStop(0.55, 'rgba(236,242,250,0.26)'); grd.addColorStop(1, 'rgba(236,242,250,0)');
+    x2.fillStyle = grd; x2.beginPath(); x2.arc(bx, by, r, 0, 7); x2.fill();
+  }
+  const cloudTex = new THREE.CanvasTexture(cc);
+  let mnX = 1e9, mxX = -1e9, mnZ = 1e9, mxZ = -1e9;
+  for (const p of PTS) { mnX = Math.min(mnX, p[0]); mxX = Math.max(mxX, p[0]); mnZ = Math.min(mnZ, p[2]); mxZ = Math.max(mxZ, p[2]); }
+  const cxc = (mnX + mxX) / 2, czc = (mnZ + mxZ) / 2, spanX = mxX - mnX + 3000, spanZ = mxZ - mnZ + 3000;
+  let cs = 987654; const crand = () => (cs = (cs * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < 16; i++) {
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex, transparent: true, opacity: 0.7, depthWrite: false, fog: false }));
+    const sc = 340 + crand() * 420;
+    spr.scale.set(sc * 2.2, sc, 1);
+    spr.position.set(cxc + (crand() - 0.5) * spanX, 520 + crand() * 320, czc + (crand() - 0.5) * spanZ);
+    scene.add(spr);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Track surface mesh
@@ -237,7 +364,7 @@ function addRibbonUVs(mesh, uStart, uEnd, vMeters) {
   // sample only the clean asphalt band (0.20–0.80), skipping the texture's
   // baked-in white edge lines so the whole surface reads as uniform tar
   addRibbonUVs(road, 0.20, 0.80, 9);
-  surfaceTex('/textures/road.png', t => {
+  surfaceTex(ASSET + 'textures/road.png', t => {
     // dark tint pulls the medium-grey photo asphalt toward real charcoal tar
     road.material = new THREE.MeshStandardMaterial({ map: t, color: 0x5f6469, roughness: 0.97 });
   });
@@ -260,6 +387,35 @@ raceLine.material.transparent = true;
 raceLine.material.opacity = 0.85;
 scene.add(raceLine);
 raceLine.visible = false;   // off by default — the broadcast has no green line (toggle: L)
+
+// Skidmarks: rubbered-in racing line that DARKENS the tarmac (near-black,
+// per-vertex alpha), widest + heaviest through braking zones and corners
+{
+  const pos = [], col = [], idx = []; let vi = 0;
+  for (let i = 0; i <= N; i++) {
+    const ii = i % N, p = P(ii), n = normals[ii], lat = RACE[ii];
+    const brake = Math.min(1, Math.max(0, V_ALLOW[ii] - V_ALLOW[(ii + 3) % N]) * 0.5);
+    const corner = Math.min(1, Math.abs(CURV[ii]) * 30);
+    const heat = Math.min(1, 0.25 + brake * 0.7 + corner * 0.6);
+    const w = 0.85 + heat * 0.95;               // wider band where the rubber builds up
+    const a = 0.16 + heat * 0.4;                // more opaque (darker) with more heat
+    pos.push(p[0] + n[0] * (lat - w), p[1] + 0.04, p[2] + n[1] * (lat - w));
+    pos.push(p[0] + n[0] * (lat + w), p[1] + 0.04, p[2] + n[1] * (lat + w));
+    col.push(0, 0, 0, a, 0, 0, 0, a);           // black with per-vertex alpha (RGBA)
+    if (i < N) idx.push(vi, vi + 2, vi + 1, vi + 1, vi + 2, vi + 3);
+    vi += 2;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));   // 4-component = per-vertex alpha
+  geo.setIndex(idx);
+  const skid = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0x000000, vertexColors: true, transparent: true, depthWrite: false, toneMapped: false,
+    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+  }));
+  skid.renderOrder = 1;
+  scene.add(skid);
+}
 
 // (white edge lines removed — track reads as uniform tarmac to the kerbs)
 
@@ -317,7 +473,7 @@ for (const side of [1, -1]) {
   g.setIndex(idx);
   g.computeVertexNormals();
   const shoulderMat = new THREE.MeshStandardMaterial({ color: 0x4d7c3c, roughness: 1, side: THREE.DoubleSide });
-  surfaceTex('/textures/grass.png', t => {
+  surfaceTex(ASSET + 'textures/grass.png', t => {
     shoulderMat.map = t; shoulderMat.color.set(0xffffff); shoulderMat.needsUpdate = true;
   });
   const m = new THREE.Mesh(g, shoulderMat);
@@ -394,9 +550,9 @@ function terrainHeight(x, z) {
   g.setAttribute('color', new THREE.BufferAttribute(colA, 3));
   g.computeVertexNormals();
   const terrMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
-  surfaceTex('/textures/grass.png', t => {
+  surfaceTex(ASSET + 'textures/grass.png', t => {
     t.repeat.set(320, 320);
-    terrMat.map = t; terrMat.vertexColors = false; terrMat.color.set(0xb9c4ae); terrMat.needsUpdate = true;
+    terrMat.map = t; terrMat.vertexColors = false; terrMat.color.set(0x83a257); terrMat.needsUpdate = true;   // richer Ardennes green
   });
   const terr = new THREE.Mesh(g, terrMat);
   terr.position.set(cx, 0, cz);
@@ -484,6 +640,40 @@ function terrainHeight(x, z) {
     }
   }
   forest.forEach(ft => { ft.m.count = ft.n; ft.m.castShadow = false; scene.add(ft.m); });
+}
+
+// ---------------------------------------------------------------------------
+// Trackside furniture: marshal posts at every corner + stacked-tyre barriers
+// in front of the armco at the tighter corners
+// ---------------------------------------------------------------------------
+{
+  const orange = new THREE.MeshStandardMaterial({ color: 0xff7a00, roughness: 0.7 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x1a1c20, roughness: 0.85 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xcf9b6f, roughness: 0.75 });
+  const tyreMat = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.92 });
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0xcfd3d8, roughness: 0.6, metalness: 0.3 });
+  const yellow = new THREE.MeshStandardMaterial({ color: 0xf4c60b, roughness: 0.6 });
+  const headG = new THREE.SphereGeometry(0.16, 8, 6), tyreG = new THREE.CylinderGeometry(0.45, 0.45, 0.3, 12);
+  const add = (geo, mat, x, y, z, ry) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); if (ry) m.rotation.y = ry; m.castShadow = true; scene.add(m); return m; };
+  for (const c of CORNERS) {
+    const i = c.i, p = P(i), n = normals[i];
+    const side = Math.abs(CURV[i]) > 1e-4 ? -Math.sign(CURV[i]) : 1;   // corner outside
+    // marshal post: a raised platform + orange marshal + a flag pole, set back behind the barrier
+    const off = HWp[i] + 12, bx = p[0] + n[0] * side * off, bz = p[2] + n[1] * side * off, by = Math.max(terrainHeight(bx, bz), p[1] - 1);
+    const face = Math.atan2(-n[0] * side, -n[1] * side);   // look toward the track
+    add(new THREE.BoxGeometry(1.8, 0.3, 1.8), dark, bx, by + 0.15, bz);
+    add(new THREE.BoxGeometry(0.5, 0.9, 0.4), orange, bx, by + 0.75, bz, face);
+    add(headG, skin, bx, by + 1.34, bz);
+    add(new THREE.CylinderGeometry(0.05, 0.05, 3, 6), poleMat, bx + n[1] * 0.9, by + 1.5, bz - n[0] * 0.9);
+    add(new THREE.BoxGeometry(0.02, 0.5, 0.7), yellow, bx + n[1] * 0.9, by + 2.5, bz - n[0] * 0.9, face);
+    // tyre-stack barrier in front of the armco at tight corners
+    if (Math.abs(CURV[i]) < 0.012) continue;
+    for (let d = -5; d <= 5; d++) {
+      const j = ((i + d * 3) % N + N) % N, q = P(j), m = normals[j];
+      const to = HWp[j] + 8, tx = q[0] + m[0] * side * to, tz = q[2] + m[1] * side * to;
+      for (let s = 0; s < 2; s++) add(tyreG, tyreMat, tx, q[1] + 0.15 + s * 0.32, tz);
+    }
+  }
 }
 
 // barriers
@@ -920,6 +1110,7 @@ const car = new THREE.Group();
   const drs = new THREE.Mesh(new THREE.BoxGeometry(1.46, 0.05, 0.24), accent);
   drs.rotation.x = -0.5;
   drs.position.set(0, 1.14, -2.16); car.add(drs);
+  car.userData.drsFlap = drs;   // laid flat when DRS opens
   for (const s of [-1, 1]) {
     const plate = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.42, 0.55), dark);
     plate.position.set(s * 0.74, 1.0, -2.05); car.add(plate);
@@ -979,7 +1170,7 @@ scene.add(car);
 // ---------------------------------------------------------------------------
 // Physics
 // ---------------------------------------------------------------------------
-const input = { throttle: 0, brake: 0, steer: 0, left: false, right: false, up: false, down: false };
+const input = { throttle: 0, brake: 0, steer: 0, left: false, right: false, up: false, down: false, overtake: false, drsWant: false };
 const state = {
   x: P(0)[0] - tangents[0][0] * 12, z: P(0)[2] - tangents[0][1] * 12,
   heading: Math.atan2(tangents[0][0], tangents[0][1]), // yaw, forward = (sin,cos)
@@ -993,6 +1184,14 @@ const state = {
   tire: { compound: 'M', wear: 0 }, nextCompound: 'M',
   pitK: 0, onPitLane: false, pitRun: false, pitLimiter: false,
   pitService: 0, pitServiced: false, pitFrozen: false,
+  // live sector timing (0/1/2), personal-best per sector, colour code p/g/y
+  sec: 0, secStart: 0, secLap: [null, null, null], secBest: [null, null, null], secCol: ['', '', ''],
+  // ERS (battery 0..1) + deploy state, DRS availability/open state
+  ers: 0.7, ersMode: 1, ersDeploy: false, ersOT: false, drsAvail: false, drsOpen: false, drsAnn: false,
+  // tyre temps (FL,FR,RL,RR °C), fuel (kg), engine mix (0 lean/1 std/2 rich),
+  // brake bias (front fraction), and flag / penalty state
+  tireTemp: [90, 90, 88, 88], fuel: 100, fuelMix: 1, brakeBias: 0.62,
+  lapInvalid: false, trackStrikes: 0, penalty: 0, blueFlag: false, offTimer: 0,
 };
 
 const MASS = 800, POWER = 690000, MU = 1.75, DFK = 0.0062, CDA = 1.45;
@@ -1009,6 +1208,20 @@ const TCOMP = {
   H: { name: 'HARD',   short: 'H', col: '#e9edf2', grip: 0.96, wear: 0.6 },
 };
 const PIT_STOP_TIME = 2.6;   // seconds stationary in the box for a tyre change
+
+// three timing sectors, split by fraction of the lap (~Spa's real split points)
+const SEC_BOUND = [TRACK_LEN * 0.32, TRACK_LEN * 0.68];
+const secOf = prog => prog < SEC_BOUND[0] ? 0 : prog < SEC_BOUND[1] ? 1 : 2;
+
+// ERS: harvest under braking / off-throttle, deploy on power (overtake = burst)
+const ERS_HARVEST_BRAKE = 0.15, ERS_HARVEST_COAST = 0.05;
+const ERS_DEPLOY_OT = 0.11, ERS_DEPLOY_BAL = 0.045;
+const ERS_BOOST_OT = 0.22, ERS_BOOST_BAL = 0.10;   // extra drive force when deploying
+// DRS: drag multiplier when open, and the two Spa activation zones (progress m).
+// A zone [a,b] with a>b wraps the start/finish line.
+const DRS_DRAG = 0.72;
+const DRS_ZONES = [[1150, 2150], [6650, 200]];   // Kemmel straight; pit straight
+const inDrsZone = prog => DRS_ZONES.some(z => z[0] <= z[1] ? (prog >= z[0] && prog <= z[1]) : (prog >= z[0] || prog <= z[1]));
 
 function trackInfo(x, z, hint) {
   let bi = hint, bd = 1e18;
@@ -1075,8 +1288,78 @@ function updatePitStop(dt) {
 
 // the slip-angle dynamics need a finer timestep than 120 Hz to stay stable
 // at low speed, so each fixed step is integrated in three substeps
+// ERS + DRS state machine, run once per physics step so the deploy/DRS flags
+// stay constant across the substeps that read them
+function updateCarSystems(dt) {
+  const s = state, speed = Math.hypot(s.vx, s.vz);
+  const braking = s.brk > 0.05, onThrottle = s.thr > 0.1;
+  // ERS harvest: mostly under braking (MGU-K regen), a trickle off-throttle
+  if (braking && speed > 8) s.ers = Math.min(1, s.ers + ERS_HARVEST_BRAKE * dt);
+  else if (!onThrottle && speed > 8) s.ers = Math.min(1, s.ers + ERS_HARVEST_COAST * dt);
+  // ERS deploy: overtake button = max burst, balanced mode = gentle auto-deploy
+  const wantOT = input.overtake;
+  const auto = s.ersMode === 1 && onThrottle && speed > 15;
+  const deploy = (wantOT || auto) && s.ers > 0.01 && onThrottle && speed > 8 && !s.pitLimiter;
+  if (deploy) s.ers = Math.max(0, s.ers - (wantOT ? ERS_DEPLOY_OT : ERS_DEPLOY_BAL) * dt);
+  s.ersDeploy = deploy; s.ersOT = deploy && wantOT;
+  // DRS: available in a zone; in a race only from lap 2 and within ~1s of a car ahead
+  const inZone = inDrsZone(s.prog);
+  let allowed = inZone;
+  if (sess.mode === 'race') {
+    if (s.lap < 1) allowed = false;
+    else {
+      if (!s.drsAnn) { s.drsAnn = true; flashLap('DRS ENABLED'); }
+      const pd = playerDist(), pv = Math.max(speed, 20);
+      let within = false;
+      for (const r of rivals) { const gap = rivalDist(r) - pd; if (gap > 0 && gap / pv < 1.0) { within = true; break; } }
+      allowed = inZone && within;
+    }
+  }
+  s.drsAvail = allowed;
+  if (input.drsWant && allowed && onThrottle && !braking && speed > 20) s.drsOpen = true;
+  if (braking || !inZone || speed < 18) { s.drsOpen = false; if (braking || !inZone) input.drsWant = false; }
+
+  // --- tyre temperatures (FL, FR, RL, RR): a target temp from the workload,
+  //     eased toward. Fronts take braking heat, rears traction; the outer tyre
+  //     in a corner loads up hottest. Warm tyres → optimal grip (state.tempGrip)
+  const tt = s.tireTemp, corner = Math.abs(s.r) * speed;
+  for (let i = 0; i < 4; i++) {
+    const front = i < 2, left = i % 2 === 0;
+    const outer = (s.steer > 0.05 && !left) || (s.steer < -0.05 && left) ? 1 : 0.45;
+    const target = 55 + speed * 0.35 + Math.min(45, corner * 22) * outer
+      + (front ? s.brk * 22 : s.thr * 14) + (onTrackState ? 0 : 18);
+    tt[i] += (Math.min(150, target) - tt[i]) * Math.min(1, dt * (0.35 + speed * 0.01));
+  }
+  const avgT = (tt[0] + tt[1] + tt[2] + tt[3]) / 4;
+  s.tempGrip = Math.max(0.93, 1 - 1e-4 * (avgT - 100) ** 2);   // cold/hot tyres lose a little grip
+
+  // --- fuel burn (telemetry): more on throttle / when deploying ---
+  if (speed > 1) s.fuel = Math.max(0, s.fuel - (0.006 + s.thr * 0.02 + (s.ersDeploy ? 0.004 : 0)) * dt);
+
+  // --- flags: blue when a car a lap (or more) ahead overall is right behind
+  //     you on the circuit, about to come past ---
+  s.blueFlag = false;
+  if (sess.mode === 'race' && sess.phase === 'racing') {
+    for (const r of rivals) {
+      if (rivalDist(r) - playerDist() > TRACK_LEN * 0.5) {
+        const rprog = (((r.u % 1) + 1) % 1) * TRACK_LEN;
+        let behind = s.prog - rprog; if (behind < 0) behind += TRACK_LEN;
+        if (behind < 45) { s.blueFlag = true; break; }
+      }
+    }
+  }
+  // --- track limits: fully off the tarmac+kerb at speed during a timed lap ---
+  const off = !onTrackState && speed > 15;
+  if (off && !s.wasOff && s.running) {
+    s.trackStrikes++; s.lapInvalid = true;
+    if (sess.mode === 'race' && s.trackStrikes % 3 === 0) { s.penalty += 5; flashLap('TRACK LIMITS — +5s PENALTY'); }
+    else flashLap('TRACK LIMITS — lap time deleted');
+  }
+  s.wasOff = off;
+}
 function physStep(dt) {
   updatePitState();
+  updateCarSystems(dt);
   const n = 3, h = dt / n;
   for (let k = 0; k < n; k++) physCore(h);
 }
@@ -1094,7 +1377,7 @@ function physCore(dt) {
   // tyre grip: compound grip × wear fall-off (steeper past the ~85% cliff),
   // folded into the surface mu so worn tyres slide on tarmac and grass alike
   const tc = TCOMP[s.tire.compound] || TCOMP.M;
-  const tireGrip = tc.grip * (1 - 0.16 * s.tire.wear) * (s.tire.wear > 0.85 ? 1 - (s.tire.wear - 0.85) * 0.8 : 1);
+  const tireGrip = tc.grip * (1 - 0.16 * s.tire.wear) * (s.tire.wear > 0.85 ? 1 - (s.tire.wear - 0.85) * 0.8 : 1) * (s.tempGrip || 1);
   // grass grip: reduced but not a cliff — brushing a wheel over the edge
   // shouldn't instantly snap the car around
   const mu = (onTrack ? MU : 0.85) * tireGrip;
@@ -1142,7 +1425,11 @@ function physCore(dt) {
   // throttle always pulls forward — including out of reverse
   let FxDrive = 0, FxBrakeF = 0, FxBrakeR = 0;
   if (s.thr > 0.01) {
-    FxDrive = s.thr * Math.min(14000, POWER / Math.max(vLong, 8));
+    // ERS deployment adds drive force (biggest effect at high speed, where the
+    // engine is power- not traction-limited)
+    const ersMul = 1 + (s.ersDeploy ? (s.ersOT ? ERS_BOOST_OT : ERS_BOOST_BAL) : 0);
+    const pMul = ersMul * (s.fuelMix === 0 ? 0.97 : s.fuelMix === 2 ? 1.04 : 1);  // engine mode: lean/std/rich
+    FxDrive = s.thr * Math.min(14000 * pMul, POWER * pMul / Math.max(vLong, 8));
     // traction control: while steering, leave the rear tires lateral headroom
     // so power-on corner exits can't pitch the car into a slide
     const tcCap = assistsOn ? (0.78 - 0.25 * Math.min(1, Math.abs(s.steer))) : 0.95;
@@ -1154,8 +1441,8 @@ function physCore(dt) {
       // keep enough grip to actually turn (no more brake-and-plow-straight)
       const absScale = assistsOn ? 1 - 0.45 * Math.min(1, Math.abs(s.steer)) : 1;
       const Fb = s.brk * mu * FzT * 1.02 * absScale;
-      FxBrakeF = Math.min(0.62 * Fb, mu * Fzf); // forward brake bias, capped per axle
-      FxBrakeR = Math.min(0.38 * Fb, mu * Fzr);
+      FxBrakeF = Math.min(s.brakeBias * Fb, mu * Fzf); // adjustable brake bias, capped per axle
+      FxBrakeR = Math.min((1 - s.brakeBias) * Fb, mu * Fzr);
     } else {
       vLong = Math.max(vLong - 4 * s.brk * dt, -8); // gentle reverse
     }
@@ -1163,7 +1450,8 @@ function physCore(dt) {
   const dirL = vLong >= 0 ? 1 : -1;
   const FxF = -FxBrakeF * dirL;
   const FxR = FxDrive - FxBrakeR * dirL;
-  const Fdrag = (0.5 * 1.22 * CDA * speed * speed + 320 + (onTrack ? 0 : 1800)) * dirL;
+  const cda = s.drsOpen ? CDA * DRS_DRAG : CDA;   // DRS drops drag → higher top speed
+  const Fdrag = (0.5 * 1.22 * cda * speed * speed + 320 + (onTrack ? 0 : 1800)) * dirL;
 
   // --- lateral tire forces: slip angles, saturation, traction circle ---
   const vRef = Math.max(Math.abs(vLong), 1);
@@ -1228,18 +1516,35 @@ function physCore(dt) {
 
   // lap timing via progress
   const prog = info2.s;
+  const now = performance.now();
+  // sector splits: close a sector the instant progress crosses its boundary
+  if (s.running) {
+    const ns = secOf(prog);
+    if (ns === s.sec + 1) {
+      const t = now - s.secStart;
+      s.secLap[s.sec] = t;
+      if (s.secBest[s.sec] == null || t < s.secBest[s.sec]) { s.secBest[s.sec] = t; s.secCol[s.sec] = 'p'; }
+      else s.secCol[s.sec] = 'y';
+      s.sec = ns; s.secStart = now;
+    }
+  }
   if (s.prog > TRACK_LEN - 60 && prog < 60 && vF > 3) {
-    const now = performance.now();
     if (s.running) {
       s.last = now - s.lapStart;
-      if (!s.best || s.last < s.best) {
+      const t3 = now - s.secStart;                 // close the final sector (S3) at the line
+      s.secLap[2] = t3;
+      if (s.secBest[2] == null || t3 < s.secBest[2]) { s.secBest[2] = t3; s.secCol[2] = 'p'; }
+      else s.secCol[2] = 'y';
+      if (!s.lapInvalid && (!s.best || s.last < s.best)) {
         s.best = s.last;
         s.bestT = s.curT.slice(); // checkpoint times of the new best lap
         flashLap(`LAP ${s.lap}  —  ${fmt(s.last)}  ★ BEST`);
-      } else flashLap(`LAP ${s.lap}  —  ${fmt(s.last)}`);
+      } else flashLap(`LAP ${s.lap}  —  ${fmt(s.last)}${s.lapInvalid ? '  ⚠ LAP INVALID' : ''}`);
     }
     s.lap++; s.lapStart = now; s.running = true;
     s.curT.fill(-1);
+    s.lapInvalid = false;                                          // fresh lap
+    s.sec = 0; s.secStart = now; s.secLap = [null, null, null];   // new lap, keep bests
   }
   s.prog = prog;
   // record checkpoint time the first time each track point is reached this lap
@@ -1258,7 +1563,7 @@ function resetCar() {
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
-let started = false, muted = false, camMode = 0, assistsOn = true;
+let started = false, muted = false, camMode = 0, assistsOn = true, tvMode = false;
 addEventListener('keydown', e => {
   // while the start menu is up, only Enter launches the selected mode
   if (!started || sess.mode === 'menu') {
@@ -1272,8 +1577,17 @@ addEventListener('keydown', e => {
     case 'KeyD': case 'ArrowRight': input.right = true; break;
     case 'KeyR': resetCar(); break;
     case 'KeyC':
+      if (prevCamMode !== null) { prevCamMode = (prevCamMode + 1) % 3; break; }  // adjust the view to return to
       camMode = (camMode + 1) % 3; // chase -> cockpit -> nose pod
       document.body.classList.toggle('cockpit', camMode >= 1);
+      break;
+    case 'KeyV':
+      tvMode = !tvMode;
+      flashLap(tvMode ? 'BROADCAST CAMERAS' : 'DRIVER CAMERA');
+      break;
+    case 'KeyF':
+      rearOn = !rearOn;
+      flashLap(rearOn ? 'REAR VIEW ON' : 'REAR VIEW OFF');
       break;
     case 'KeyO':
       toggleSettings();
@@ -1289,6 +1603,18 @@ addEventListener('keydown', e => {
       break;
     case 'KeyB': if (car.userData.imported) car.userData.imported.rotation.y += Math.PI / 2; break;
     case 'KeyM': muted = !muted; break;
+    case 'ShiftLeft': case 'ShiftRight': input.overtake = true; break;
+    case 'Space': input.drsWant = true; e.preventDefault(); break;
+    case 'KeyE':
+      state.ersMode = state.ersMode === 1 ? 0 : 1;
+      flashLap(state.ersMode === 1 ? 'ERS: BALANCED — auto-deploy' : 'ERS: HARVEST — saving battery');
+      break;
+    case 'KeyQ':
+      state.fuelMix = (state.fuelMix + 1) % 3;
+      flashLap('ENGINE: ' + ['LEAN — saving fuel', 'STANDARD', 'RICH — max power'][state.fuelMix]);
+      break;
+    case 'BracketLeft': state.brakeBias = Math.max(0.54, state.brakeBias - 0.01); flashLap('BRAKE BIAS ' + Math.round(state.brakeBias * 100) + '% FRONT'); break;
+    case 'BracketRight': state.brakeBias = Math.min(0.70, state.brakeBias + 0.01); flashLap('BRAKE BIAS ' + Math.round(state.brakeBias * 100) + '% FRONT'); break;
     case 'Digit1': state.nextCompound = 'S'; flashLap('NEXT STOP: SOFT'); break;
     case 'Digit2': state.nextCompound = 'M'; flashLap('NEXT STOP: MEDIUM'); break;
     case 'Digit3': state.nextCompound = 'H'; flashLap('NEXT STOP: HARD'); break;
@@ -1300,6 +1626,7 @@ addEventListener('keyup', e => {
     case 'KeyS': case 'ArrowDown': input.brake = 0; break;
     case 'KeyA': case 'ArrowLeft': input.left = false; break;
     case 'KeyD': case 'ArrowRight': input.right = false; break;
+    case 'ShiftLeft': case 'ShiftRight': input.overtake = false; break;
   }
 });
 
@@ -1316,7 +1643,7 @@ function initAudio() {
   const master = ctx.createGain(); master.gain.value = 0;
   const comp = ctx.createDynamicsCompressor();
   master.connect(comp); comp.connect(ctx.destination);
-  fetch('/engine.wav')
+  fetch(ASSET + 'engine.wav')
     .then(r => (r.ok && (r.headers.get('content-type') || '').includes('audio')) ? r.arrayBuffer() : Promise.reject())
     .then(b => ctx.decodeAudioData(b))
     .then(buf => {
@@ -1439,6 +1766,15 @@ function updateHUD(speedKmh) {
   $('lapCount').textContent = state.lap;
   $('offtrack').style.opacity = onTrackState ? 0 : 1;
 
+  // sector timing strip (purple = personal best sector, yellow = slower)
+  for (let k = 0; k < 3; k++) {
+    const box = $('sec' + k);
+    let cls = 's', txt = '—';
+    if (state.running && state.sec === k) { cls = 's cur'; txt = ((performance.now() - state.secStart) / 1000).toFixed(1); }
+    else if (state.secLap[k] != null) { cls = 's ' + (state.secCol[k] || ''); txt = (state.secLap[k] / 1000).toFixed(1); }
+    box.className = cls; $('sec' + k + 'v').textContent = txt;
+  }
+
   // corner name banner
   let name = '';
   for (const c of CORNERS) {
@@ -1471,6 +1807,33 @@ function updateHUD(speedKmh) {
     pm.className = 'hud show lim';
   } else pm.className = 'hud';
 
+  // ERS battery + mode
+  $('ersfill').style.width = Math.round(state.ers * 100) + '%';
+  $('erspct').textContent = Math.round(state.ers * 100) + '%';
+  const em = $('ersmode');
+  if (state.ersOT) { em.textContent = 'OVERTAKE'; em.className = 'ot'; }
+  else if (state.ersDeploy) { em.textContent = 'DEPLOY'; em.className = 'deploy'; }
+  else { em.textContent = state.brk > 0.05 ? 'HARVESTING' : (state.ersMode === 1 ? 'ERS BALANCED' : 'ERS HARVEST'); em.className = ''; }
+  // DRS indicator
+  $('drs').className = state.drsOpen ? 'hud open' : state.drsAvail ? 'hud avail' : 'hud';
+
+  // MFD: tyre temps (colour by heat) + fuel / engine mode / brake bias
+  $('mfd').classList.toggle('show', sess.mode !== 'menu');
+  const tempCol = t => t < 75 ? '#3a7bd6' : t < 88 ? '#2a9d8f' : t < 110 ? '#2ec26a' : t < 125 ? '#e8993a' : '#e5342b';
+  const tids = ['ttFL', 'ttFR', 'ttRL', 'ttRR'];
+  for (let i = 0; i < 4; i++) { const el = $(tids[i]); el.style.background = tempCol(state.tireTemp[i]); el.textContent = Math.round(state.tireTemp[i]); }
+  $('mFuel').textContent = Math.max(0, state.fuel).toFixed(0);
+  $('mMix').textContent = ['LEAN', 'STD', 'RICH'][state.fuelMix];
+  $('mBB').textContent = Math.round(state.brakeBias * 100) + '%';
+
+  // flags + penalty
+  const fl = $('flag');
+  fl.className = state.blueFlag ? 'hud blue' : 'hud';
+  fl.textContent = state.blueFlag ? 'BLUE FLAG' : '';
+  const pen = $('penalty');
+  if (state.penalty > 0) { pen.className = 'hud show'; pen.textContent = '+' + state.penalty + 's PENALTY'; }
+  else pen.className = 'hud';
+
   return rpmFrac;
 }
 
@@ -1498,10 +1861,26 @@ function drawMinimap() {
   const p0 = P(0);
   mm.fillStyle = '#ffd34d';
   mm.fillRect(mmX(p0[0]) - 2.5, mmZ(p0[2]) - 2.5, 5, 5);
+  // rival cars as team-coloured dots (race / quali only)
+  if (sess.mode === 'race' || sess.mode === 'quali') {
+    for (const r of rivals) {
+      const rp = r.mesh.position;
+      mm.beginPath();
+      mm.arc(mmX(rp.x), mmZ(rp.z), 3.2, 0, 7);
+      mm.fillStyle = '#' + r.def.color.toString(16).padStart(6, '0');
+      mm.fill();
+      mm.lineWidth = 1; mm.strokeStyle = 'rgba(0,0,0,.55)'; mm.stroke();
+    }
+  }
+  // player on top: heading tick + red dot
+  const px = mmX(state.x), pz = mmZ(state.z);
+  mm.beginPath(); mm.moveTo(px, pz);
+  mm.lineTo(px + Math.sin(state.heading) * 9, pz + Math.cos(state.heading) * 9);
+  mm.strokeStyle = '#fff'; mm.lineWidth = 2; mm.stroke();
   mm.beginPath();
-  mm.arc(mmX(state.x), mmZ(state.z), 4, 0, 7);
+  mm.arc(px, pz, 4.2, 0, 7);
   mm.fillStyle = '#e10600'; mm.fill();
-  mm.strokeStyle = '#fff'; mm.lineWidth = 1.2; mm.stroke();
+  mm.strokeStyle = '#fff'; mm.lineWidth = 1.4; mm.stroke();
 }
 
 // ---------------------------------------------------------------------------
@@ -1528,7 +1907,15 @@ function attachCarModel(model) {
   wrap.position.set(-center.x, -box.min.y + 0.02, -center.z);
   const outer = new THREE.Group();
   outer.add(wrap);
-  outer.traverse(o => { if (o.isMesh) { o.castShadow = true; if (o.material) o.material.side = THREE.DoubleSide; } });
+  outer.traverse(o => {
+    if (!o.isMesh) return;
+    o.castShadow = true;
+    for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+      if (!m) continue;
+      m.side = THREE.DoubleSide;
+      if ('envMapIntensity' in m) { m.envMapIntensity = 1.5; m.needsUpdate = true; }   // glossy F1 bodywork catches the sky
+    }
+  });
   car.add(outer);
   outer.updateMatrixWorld(true);
   car.userData.imported = outer;
@@ -1593,15 +1980,15 @@ function attachCarModel(model) {
 }
 
 const draco = new DRACOLoader();
-draco.setDecoderPath('/draco/');
+draco.setDecoderPath(ASSET + 'draco/');
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(draco);
-gltfLoader.load('/car.glb', g => attachCarModel(g.scene), undefined,
+gltfLoader.load(ASSET + 'car.glb', g => attachCarModel(g.scene), undefined,
   () => {}); // no file — placeholder car stays
 
 // steering wheel model: replaces the primitive wheel in the cockpit; the live
 // LCD and LED strip stay, floating on the model's screen area
-gltfLoader.load('/wheel.glb', g => {
+gltfLoader.load(ASSET + 'wheel.glb', g => {
   const model = g.scene;
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
@@ -1633,7 +2020,7 @@ gltfLoader.load('/wheel.glb', g => {
 }, undefined, () => {});
 
 // ---------- cockpit setup panel (key O): wheel XYZ + driver eye tuning ----------
-const CFG_DEF = { wx: 0, wy: 0.76, wz: 0.58, camBack: 0.10, camUp: 0.92, pitch: 0.12, fov: 66 };
+const CFG_DEF = { wx: -0.005, wy: 0.66, wz: 0.58, camBack: 0.265, camUp: 0.855, pitch: 0.12, fov: 66 };
 let cfg = { ...CFG_DEF };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('ardennes.cockpit') || '{}')); } catch { /* fresh defaults */ }
 function saveCfg() { localStorage.setItem('ardennes.cockpit', JSON.stringify(cfg)); }
@@ -1710,19 +2097,19 @@ addEventListener('drop', e => {
 // no collision). Positions rank by distance covered.
 // ---------------------------------------------------------------------------
 const RIVALS_DEF = [
-  { name: 'VER', color: 0x1f3a93, lap: 136.0 },
-  { name: 'LEC', color: 0xd42020, lap: 137.6 },
-  { name: 'RUS', color: 0x00a19c, lap: 139.2 },
-  { name: 'PIA', color: 0xff8000, lap: 140.8 },
-  { name: 'SAI', color: 0xd42020, lap: 142.4 },
-  { name: 'ALO', color: 0x0a7d68, lap: 144.2 },
-  { name: 'HAM', color: 0x00a19c, lap: 146.0 },
-  { name: 'GAS', color: 0x2f6fb0, lap: 148.0 },
+  { name: 'VER', full: 'VERSTAPPEN', color: 0x1f3a93, lap: 136.0 },
+  { name: 'LEC', full: 'LECLERC',    color: 0xd42020, lap: 137.6 },
+  { name: 'RUS', full: 'RUSSELL',    color: 0x00a19c, lap: 139.2 },
+  { name: 'PIA', full: 'PIASTRI',    color: 0xff8000, lap: 140.8 },
+  { name: 'SAI', full: 'SAINZ',      color: 0xd42020, lap: 142.4 },
+  { name: 'ALO', full: 'ALONSO',     color: 0x0a7d68, lap: 144.2 },
+  { name: 'HAM', full: 'HAMILTON',   color: 0x00a19c, lap: 146.0 },
+  { name: 'GAS', full: 'GASLY',      color: 0x2f6fb0, lap: 148.0 },
 ];
 function makeRivalCar(color) {
   const grp = new THREE.Group();
-  const body = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.1 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x0b0b0d, roughness: 0.6 });
+  const body = new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.1, envMapIntensity: 0.55 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x0b0b0d, roughness: 0.7, envMapIntensity: 0.4 });
   const tyre = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.85 });
   const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; grp.add(m); return m; };
   add(new THREE.BoxGeometry(0.86, 0.40, 3.8), body, 0, 0.50, 0);      // tub
@@ -1780,7 +2167,7 @@ const rivals = RIVALS_DEF.map((def) => {
   // skill scales corner speed (fastest driver = highest); aggression drives
   // defending/overtaking; react = launch reaction delay at the start.
   const skill = 1.0 - (def.lap - 136) / 12 * 0.09;
-  return { def, mesh, u: 0, v: 0, lat: 0, latV: 0, gridLat: null, skill,
+  return { def, mesh, u: 0, v: 0, lat: 0, latV: 0, gridLat: null, skill, tire: 'M',
     aggr: 0.3 + Math.random() * 0.6, react: 0.12 + Math.random() * 0.35, errT: 3 + Math.random() * 6, errUntil: 0 };
 });
 const GRID_BLEND = 4.5; // seconds to merge from grid box onto the racing line
@@ -1901,18 +2288,23 @@ scene.add(gridBoxes);
 {
   const cv = document.createElement('canvas'); cv.width = 64; cv.height = 140;
   const g2 = cv.getContext('2d');
-  g2.strokeStyle = 'rgba(255,255,255,0.92)'; g2.lineWidth = 6;
+  g2.strokeStyle = 'rgba(235,235,235,0.72)'; g2.lineWidth = 6;   // matte paint (less bloom glow)
   g2.strokeRect(5, 5, 54, 100);                       // start box
-  g2.fillStyle = 'rgba(255,255,255,0.92)'; g2.fillRect(26, 108, 12, 26); // stub line
+  g2.fillStyle = 'rgba(235,235,235,0.72)'; g2.fillRect(26, 108, 12, 26); // stub line
   const tex = new THREE.CanvasTexture(cv);
   const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
   const geo = new THREE.PlaneGeometry(2.4, 6.0);
   for (let slot = 0; slot < FIELD_N; slot++) {
     const p = poseAtGrid(gridProgOf(slot), gridLatOf(slot));
+    // yaw a holder to the track heading (same as the cars), lay the box flat
+    // inside it — so the box always lines up square with the track
+    const holder = new THREE.Group();
+    holder.position.set(p.x, trackInfo(p.x, p.z, p.idx).y + 0.02, p.z);
+    holder.rotation.y = p.heading;
     const m = new THREE.Mesh(geo, mat);
-    m.rotation.x = -Math.PI / 2; m.rotation.z = -p.heading;
-    m.position.set(p.x, trackInfo(p.x, p.z, p.idx).y + 0.02, p.z);
-    gridBoxes.add(m);
+    m.rotation.x = -Math.PI / 2;
+    holder.add(m);
+    gridBoxes.add(holder);
   }
 }
 
@@ -1949,6 +2341,154 @@ function updateStartLights(lit, allOff) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Pit crew — a small crew that swarms the car during a stop (cutscene)
+// ---------------------------------------------------------------------------
+function makeCrewman(color, gun) {
+  const g = new THREE.Group();
+  const suit = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x15171b, roughness: 0.6 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xcf9b6f, roughness: 0.75 });
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.32), suit); torso.position.y = 1.12; g.add(torso);
+  const hip = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.34, 0.3), dark); hip.position.y = 0.74; g.add(hip);
+  for (const s of [-1, 1]) { const leg = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.72, 0.22), dark); leg.position.set(s * 0.12, 0.36, 0); g.add(leg); }
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), skin); head.position.y = 1.55; g.add(head);
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), suit); helmet.position.y = 1.57; helmet.scale.y = 0.9; g.add(helmet);
+  for (const s of [-1, 1]) { const arm = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.46, 0.15), suit); arm.position.set(s * 0.3, 1.12, 0.06); arm.rotation.x = -0.7; g.add(arm); }
+  if (gun) {
+    const wg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.05, 0.55, 8), new THREE.MeshStandardMaterial({ color: 0xffb400, roughness: 0.5, metalness: 0.4 }));
+    wg.rotation.x = Math.PI / 2; wg.position.set(0, 0.95, 0.42); g.add(wg); g.userData.gun = wg;
+  }
+  g.userData.suit = suit;   // exposed so podium figures can be recoloured per team
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  return g;
+}
+const pitCrew = new THREE.Group(); pitCrew.visible = false; scene.add(pitCrew);
+const crewGunners = [];
+let crewLollipop, crewFrontJack;
+{
+  const RED = 0xf36a00;   // papaya, matching the McLaren player car
+  const slots = [   // [x, z, faceY, gun]
+    [1.7, 1.75, -Math.PI / 2, 1], [2.55, 1.75, -Math.PI / 2, 0],
+    [-1.7, 1.75, Math.PI / 2, 1], [-2.55, 1.75, Math.PI / 2, 0],
+    [1.7, -1.55, -Math.PI / 2, 1], [2.55, -1.55, -Math.PI / 2, 0],
+    [-1.7, -1.55, Math.PI / 2, 1], [-2.55, -1.55, Math.PI / 2, 0],
+    [0, -3.5, 0, 0],   // rear jack man
+  ];
+  for (const [x, z, fy, gun] of slots) {
+    const c = makeCrewman(RED, gun);
+    c.position.set(x, 0, z); c.rotation.y = fy; c.userData.phase = Math.random() * 6.28;
+    pitCrew.add(c); if (gun) crewGunners.push(c);
+  }
+  const jm = makeCrewman(RED, 0); jm.position.set(0, 0, 3.7); jm.rotation.y = Math.PI; pitCrew.add(jm);
+  crewFrontJack = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 1.4), new THREE.MeshStandardMaterial({ color: 0x1c1e22 }));
+  crewFrontJack.position.set(0, 0.15, 3.0); pitCrew.add(crewFrontJack);
+  const lm = makeCrewman(RED, 0); lm.position.set(0, 0, 4.5); lm.rotation.y = Math.PI; pitCrew.add(lm);
+  crewLollipop = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.2, 6), new THREE.MeshStandardMaterial({ color: 0x222222 })); pole.position.y = 1.1; crewLollipop.add(pole);
+  const sign = new THREE.Mesh(new THREE.CircleGeometry(0.34, 20), new THREE.MeshBasicMaterial({ color: 0xf36a00, side: THREE.DoubleSide })); sign.position.y = 2.2; crewLollipop.add(sign);
+  crewLollipop.userData.sign = sign; crewLollipop.position.set(0, 0, 4.3); pitCrew.add(crewLollipop);
+  const tyreMat = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9 });
+  for (const [sx, sz] of [[3.3, 1.75], [-3.3, 1.75], [3.3, -1.55], [-3.3, -1.55]])
+    for (let s = 0; s < 2; s++) { const ty = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.24, 16), tyreMat); ty.position.set(sx, 0.12 + s * 0.26, sz); pitCrew.add(ty); }
+  pitCrew.traverse(o => { if (o.isMesh) o.castShadow = true; });
+}
+function updatePitCrew(dt, now) {
+  const on = state.pitFrozen;
+  pitCrew.visible = on;
+  if (!on) return;
+  pitCrew.position.copy(car.position);
+  pitCrew.rotation.y = state.heading;
+  const svc = state.pitService, working = svc > 0.3 && svc < PIT_STOP_TIME - 0.3;
+  for (const c of crewGunners) {
+    c.position.y = working ? Math.sin(now / 90 + c.userData.phase) * 0.06 - 0.15 : 0;  // crouch + bob
+    if (c.userData.gun) c.userData.gun.rotation.z += (working ? 30 : 0) * dt;
+  }
+  crewFrontJack.position.y = 0.15 + (working ? 0.12 : 0);
+  const releasing = svc > PIT_STOP_TIME - 0.4;
+  crewLollipop.rotation.x = releasing ? -1.2 : 0;
+  crewLollipop.userData.sign.material.color.setHex(releasing ? 0x1fbf3a : 0xf36a00);
+}
+
+// Trackside broadcast cameras: elevated, on the outside of corners, spread
+// around the lap. The TV/replay mode picks the nearest one and frames the car.
+const TV_CAMS = [];
+{
+  // dense enough that there is always a close camera (a distant one shoots
+  // through the forest); close to the track edge for a clean line to the car
+  const step = Math.max(1, Math.floor(N / 48));
+  for (let i = 0; i < N; i += step) {
+    const p = P(i), n = normals[i];
+    const side = Math.abs(CURV[i]) > 1e-4 ? -Math.sign(CURV[i]) : (i % 2 ? 1 : -1);
+    const off = 13 + (i % 4) * 2;
+    const cx = p[0] + n[0] * side * off, cz = p[2] + n[1] * side * off;
+    // above the real ground here (track height buries cams on the hills), floored
+    // at track+7 so a dip below the track can't put it underground
+    TV_CAMS.push(new THREE.Vector3(cx, Math.max(terrainHeight(cx, cz), p[1]) + 8, cz));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Podium — post-race ceremony beside the start/finish line
+// ---------------------------------------------------------------------------
+const podium = new THREE.Group(); podium.visible = false; scene.add(podium);
+const podiumFigs = [], podiumTrophies = [];
+let confetti, podiumActive = false, podiumT = 0;
+const PODIUM_SLOTS = [[0, 1.7], [2.2, 1.3], [-2.2, 1.0]];   // [x, height] for P1 (centre), P2 (left), P3 (right)
+{
+  const tierMat = new THREE.MeshStandardMaterial({ color: 0xe2e4ea, roughness: 0.7 });
+  for (const [tx, h] of PODIUM_SLOTS) {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(2.0, h, 1.6), tierMat);
+    box.position.set(tx, h / 2, 0); box.castShadow = true; box.receiveShadow = true; podium.add(box);
+  }
+  const board = new THREE.Mesh(new THREE.BoxGeometry(8.2, 2.7, 0.2), new THREE.MeshStandardMaterial({ color: 0x0b1220, roughness: 0.8 }));
+  board.position.set(0, 2.75, 1.3); podium.add(board);
+  const strip = new THREE.Mesh(new THREE.BoxGeometry(8.2, 0.45, 0.22), new THREE.MeshStandardMaterial({ color: 0xe10600 }));
+  strip.position.set(0, 3.95, 1.29); podium.add(strip);
+  for (let k = 0; k < 3; k++) {
+    const fig = makeCrewman(0xffffff, 0); podium.add(fig); podiumFigs.push(fig);
+    const tr = new THREE.Group();
+    const gold = new THREE.MeshStandardMaterial({ color: 0xffd34d, metalness: 0.7, roughness: 0.3 });
+    const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.09, 0.34, 12), gold); cup.position.y = 0.28; tr.add(cup);
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.14, 8), gold); stem.position.y = 0.06; tr.add(stem);
+    tr.visible = false; podium.add(tr); podiumTrophies.push(tr);
+  }
+  const CN = 320, pos = new Float32Array(CN * 3), col = new Float32Array(CN * 3);
+  const cc = [[0.92, 0.12, 0.12], [0.12, 0.42, 0.92], [0.96, 0.82, 0.12], [0.12, 0.82, 0.32], [0.95, 0.95, 0.95]];
+  for (let i = 0; i < CN; i++) {
+    pos[i * 3] = (Math.random() - 0.5) * 10; pos[i * 3 + 1] = Math.random() * 8; pos[i * 3 + 2] = (Math.random() - 0.5) * 5;
+    const c = cc[i % cc.length]; col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
+  }
+  const cg = new THREE.BufferGeometry();
+  cg.setAttribute('position', new THREE.BufferAttribute(pos, 3)); cg.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  confetti = new THREE.Points(cg, new THREE.PointsMaterial({ size: 0.18, vertexColors: true }));
+  podium.add(confetti);
+  const gp = poseAtGrid(34, 0), n = normals[gp.idx];
+  const px = gp.x + n[0] * 13, pz = gp.z + n[1] * 13;
+  podium.position.set(px, trackInfo(px, pz, gp.idx).y, pz);
+  podium.rotation.y = Math.atan2(n[0], n[1]);   // figures face the track (-normal), board behind them
+  podium.userData.toTrack = new THREE.Vector3(-n[0], 0, -n[1]);   // camera sits on the track side
+}
+function showPodium(top3) {
+  for (let k = 0; k < 3; k++) {
+    const [x, h] = PODIUM_SLOTS[k], fig = podiumFigs[k], tr = podiumTrophies[k];
+    fig.position.set(x, h, 0); fig.rotation.y = Math.PI;
+    fig.userData.suit.color.setHex(top3[k] ? top3[k].color : 0x888888);
+    tr.position.set(x + 0.32, h + 0.9, 0.2); tr.visible = !!top3[k]; tr.scale.setScalar(k === 0 ? 1.5 : 1);
+  }
+  podium.visible = true; podiumActive = true; podiumT = 0;
+}
+function updateConfetti(dt) {
+  if (!podiumActive) return;
+  const p = confetti.geometry.attributes.position, a = p.array;
+  for (let i = 0; i < a.length; i += 3) {
+    a[i + 1] -= (1.2 + (i % 7) * 0.15) * dt;
+    a[i] += Math.sin(podiumT * 2 + i) * 0.004;
+    if (a[i + 1] < 0) a[i + 1] = 8;
+  }
+  p.needsUpdate = true;
+}
+
 const fmtShort = ms => !isFinite(ms) ? '—'
   : `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${Math.floor((ms % 1000) / 100)}`;
 const $id = id => document.getElementById(id);
@@ -1967,6 +2507,15 @@ const playerRacePos = () => rivals.filter(r => rivalDist(r) > playerDist()).leng
 function clearPlayerLaps() {
   state.lap = 0; state.best = null; state.last = null; state.bestT = null;
   state.running = false; state.curT.fill(-1);
+  // reset sector timing (fresh best sectors each session)
+  state.sec = 0; state.secStart = 0; state.secLap = [null, null, null];
+  state.secBest = [null, null, null]; state.secCol = ['', '', ''];
+  // reset ERS (start with a useful charge) + DRS
+  state.ers = 0.7; state.ersDeploy = false; state.ersOT = false;
+  state.drsAvail = false; state.drsOpen = false; state.drsAnn = false;
+  // fresh tyres/fuel + cleared penalties each session (keep brake-bias/mix setup)
+  state.tireTemp = [90, 90, 88, 88]; state.fuel = 100;
+  state.lapInvalid = false; state.trackStrikes = 0; state.penalty = 0; state.blueFlag = false; state.wasOff = false;
   // fresh tyres of the chosen compound, and a clean pit state, each session
   state.tire = { compound: state.nextCompound || 'M', wear: 0 };
   state.pitRun = false; state.pitLimiter = false;
@@ -1982,6 +2531,8 @@ function startRace(playerGrid) {
   rivalsGroup.visible = true; showTower(true);
   gridBoxes.visible = true; startLights.visible = true;
   updateStartLights(0, false);
+  // rival starting tyres: a mixed grid (mostly mediums, some softs/hards)
+  rivals.forEach(r => { const x = Math.random(); r.tire = x < 0.55 ? 'M' : x < 0.82 ? 'S' : 'H'; });
   // pole = fastest; player slots in at playerGrid (default: the back)
   const order = rivals.slice().sort((a, b) => a.def.lap - b.def.lap);
   const pg = playerGrid != null ? playerGrid : rivals.length;
@@ -2016,14 +2567,16 @@ function endQuali() {
 }
 function endRace() {
   sess.running = false;
-  const order = rivals.map(r => ({ name: r.def.name, dist: rivalDist(r), you: false }))
-    .concat([{ name: 'YOU', dist: playerDist(), you: true }])
+  const order = rivals.map(r => ({ name: r.def.full || r.def.name, color: r.def.color, dist: rivalDist(r), you: false }))
+    .concat([{ name: 'YOU', color: 0xf36a00, dist: playerDist() - state.penalty * 68, you: true }])   // time penalty in the classification
     .sort((a, b) => b.dist - a.dist);
   const pos = order.findIndex(e => e.you) + 1;
   $id('resultPos').textContent = 'P' + pos;
   $id('resultGrid').innerHTML = order.map((e, i) =>
-    `<div class="r${e.you ? ' you' : ''}"><span class="p">P${i + 1}</span><span class="n">${e.name}</span></div>`).join('');
-  $id('results').classList.add('show');
+    `<div class="r${e.you ? ' you' : ''}"><span class="p">P${i + 1}</span><span class="n">${e.name}${e.you && state.penalty > 0 ? ` <small style="opacity:.7">(+${state.penalty}s)</small>` : ''}</span></div>`).join('');
+  // podium ceremony plays first, then the full classification appears over it
+  showPodium(order.slice(0, 3));
+  setTimeout(() => $id('results').classList.add('show'), 4200);
 }
 
 function updateModeBar() {
@@ -2038,26 +2591,45 @@ function updateModeBar() {
     el.innerHTML = `<span class="q">RACE</span><span class="clock">LAP ${lap}/${sess.laps} · P${playerRacePos()}</span>`;
   }
 }
-function towerRow(pos, color, name, right, you) {
-  return `<div class="r${you ? ' you' : ''}"><span class="pos">${pos}</span>`
-    + `<span class="dot" style="background:#${color.toString(16).padStart(6, '0')}"></span>`
-    + `<span class="nm">${name}</span><span class="tm">${right}</span></div>`;
+const TYRE_COL = { S: '#e5342b', M: '#e8c43a', H: '#e9edf2' };
+function tyreDot(comp) {
+  const c = TYRE_COL[comp] || '#e8c43a';
+  return `<span class="tyre" style="border-color:${c};color:${c}">${comp}</span>`;
+}
+function towerRow(row) {
+  const col = '#' + row.color.toString(16).padStart(6, '0');
+  return `<div class="r${row.you ? ' you' : ''}${row.fastest ? ' fastest' : ''}">`
+    + `<span class="pos">${row.pos}</span>`
+    + `<span class="bar" style="background:${col}"></span>`
+    + `<span class="nm">${row.name}</span>`
+    + tyreDot(row.tyre)
+    + `<span class="gap">${row.gap}</span></div>`;
 }
 function updateTower() {
   const el = $id('tower');
   if (sess.mode === 'race') {
-    // lap number (1-based): rivals count from floor(u)+1, player from state.lap
-    const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, dist: rivalDist(r), lapNum: Math.floor(r.u) + 1, you: false }));
-    rows.push({ name: 'YOU', color: 0xffffff, dist: playerDist(), lapNum: state.lap, you: true });
+    // fastest-lap holder gets the purple name (rivals use their nominal pace)
+    let flName = null, flBest = Infinity;
+    for (const r of rivals) { const t = r.def.lap * 1000; if (t < flBest) { flBest = t; flName = r.def.name; } }
+    if (state.best && state.best < flBest) flName = 'YOU';
+    const rows = rivals.map(r => ({ id: r.def.name, name: r.def.full || r.def.name, color: r.def.color,
+      dist: rivalDist(r), v: r.v, tyre: r.tire, you: false }));
+    rows.push({ id: 'YOU', name: 'YOU', color: 0xffffff, dist: playerDist(),
+      v: Math.hypot(state.vx, state.vz), tyre: state.tire.compound, you: true });
     rows.sort((a, b) => b.dist - a.dist);
-    el.innerHTML = '<div class="th">RACE ORDER</div>' + rows.map((r, i) =>
-      towerRow(i + 1, r.color, r.name, 'L' + Math.min(Math.max(r.lapNum, 1), sess.laps), r.you)).join('');
+    const lead = rows[0].dist, racing = sess.phase === 'racing';
+    const lap = Math.min(Math.max(state.lap, 1), sess.laps);
+    el.innerHTML = `<div class="th"><span>RACE ORDER</span><span class="laps">LAP ${lap}/${sess.laps}</span></div>`
+      + rows.map((r, i) => towerRow({
+        pos: i + 1, color: r.color, name: r.name, tyre: r.tyre, you: r.you, fastest: r.id === flName,
+        gap: racing ? (i === 0 ? '' : '+' + ((lead - r.dist) / Math.max(r.v, 30)).toFixed(1)) : '',
+      })).join('');
   } else if (sess.mode === 'quali') {
-    const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, ms: r.def.lap * 1000, you: false }));
-    rows.push({ name: 'YOU', color: 0xffffff, ms: state.best || Infinity, you: true });
+    const rows = rivals.map(r => ({ name: r.def.full || r.def.name, color: r.def.color, ms: r.def.lap * 1000, tyre: r.tire, you: false }));
+    rows.push({ name: 'YOU', color: 0xffffff, ms: state.best || Infinity, tyre: state.tire.compound, you: true });
     rows.sort((a, b) => a.ms - b.ms);
-    el.innerHTML = '<div class="th">QUALIFYING</div>' + rows.map((r, i) =>
-      towerRow(i + 1, r.color, r.name, fmtShort(r.ms), r.you)).join('');
+    el.innerHTML = '<div class="th"><span>QUALIFYING</span></div>' + rows.map((r, i) =>
+      towerRow({ pos: i + 1, color: r.color, name: r.name, tyre: r.tyre, gap: fmtShort(r.ms), you: r.you, fastest: i === 0 })).join('');
   }
 }
 function updateSession(dt) {
@@ -2106,6 +2678,7 @@ function placeInGarage() {
 function startGame(mode) {
   $id('title').style.display = 'none';
   $id('results').classList.remove('show');
+  document.body.classList.add('driving');   // reveal the touch controls
   if (!started) { started = true; initAudio(); }
   if (mode === 'practice') {
     sess.mode = 'practice'; sess.running = false;
@@ -2116,23 +2689,41 @@ function startGame(mode) {
   } else if (mode === 'quali') {
     sess.mode = 'quali'; sess.running = true; sess.timeLeft = menu.qmin * 60;
     rivalsGroup.visible = true; showTower(true);
-    rivals.forEach((r) => { r.u = Math.random(); r.lat = RACE[idxAtU(r.u)]; r.v = V_ALLOW[idxAtU(r.u)] * r.skill * 0.85; placeRival(r); });
-    state.idx = 0; resetCar(); clearPlayerLaps();
-    flashLap(`QUALIFYING — ${menu.qmin}:00 — set your fastest lap`);
+    rivals.forEach((r) => { r.u = Math.random(); r.lat = RACE[idxAtU(r.u)]; r.v = V_ALLOW[idxAtU(r.u)] * r.skill * 0.85; r.tire = 'S'; placeRival(r); });
+    // start ~300 m back on the pit straight (just past the Bus Stop) so there's
+    // room to wind up before the line and start the flying lap at speed
+    const qi = ((Math.round((TRACK_LEN - 300) / STEP)) % N + N) % N;
+    state.idx = qi; resetCar(); clearPlayerLaps(); state.prog = qi * STEP;
+    flashLap(`QUALIFYING — ${menu.qmin}:00 — build speed, then set your lap`);
   } else {
     startRace(null);
   }
   updateModeBar();
 }
 function backToMenu() {
-  sess.mode = 'menu'; sess.running = false;
+  sess.mode = 'menu'; sess.running = false; tvMode = false;
+  podiumActive = false; podium.visible = false;
   rivalsGroup.visible = false; showTower(false);
   $id('results').classList.remove('show');
   $id('title').style.display = 'flex';
+  document.body.classList.remove('driving');   // hide the touch controls on the menu
   state.idx = 0; resetCar(); clearPlayerLaps();
   $id('modebar').textContent = '';
   $id('startlights').classList.remove('show', 'go');
 }
+
+// fullscreen: hides the mobile browser chrome (address bar) in landscape.
+// Works on Android; on iOS use "Add to Home Screen" (web-app meta handles that).
+const _fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+function goFullscreen() {
+  const el = document.documentElement, req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (req && !_fsEl()) { try { const p = req.call(el); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
+}
+function toggleFullscreen() {
+  if (_fsEl()) { (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document); }
+  else goFullscreen();
+}
+
 {
   const modes = document.querySelectorAll('.modes .mode');
   modes.forEach(b => b.addEventListener('click', () => {
@@ -2148,18 +2739,58 @@ function backToMenu() {
       if (seg.dataset.opt === 'laps') menu.laps = +btn.dataset.v;
       else if (seg.dataset.opt === 'qmin') menu.qmin = +btn.dataset.v;
       else if (seg.dataset.opt === 'start') menu.startGarage = btn.dataset.v === 'garage';
+      else if (seg.dataset.opt === 'quality' && btn.dataset.v !== QUALITY) { localStorage.setItem('ardennes.quality', btn.dataset.v); location.reload(); }
     })));
-  $id('startBtn').addEventListener('click', () => startGame(menu.mode));
+  document.querySelector('#optQuality button[data-v="' + QUALITY + '"]')?.classList.add('on');   // reflect current quality
+  $id('startBtn').addEventListener('click', () => { if (IS_TOUCH) goFullscreen(); startGame(menu.mode); });   // phones go fullscreen on start
   $id('resultBtn').addEventListener('click', backToMenu);
+}
+
+// on-screen touch controls for phones: steering, pedals, DRS/ERS, reset, menu
+if (IS_TOUCH) document.body.classList.add('touch');
+{
+  const hold = (id, on, off) => {
+    const el = $id(id); if (!el) return;
+    el.addEventListener('pointerdown', e => { e.preventDefault(); try { el.setPointerCapture(e.pointerId); } catch (_) {} el.classList.add('active'); on(); });
+    const end = () => { el.classList.remove('active'); off(); };
+    el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end); el.addEventListener('lostpointercapture', end);
+  };
+  const tap = (id, fn) => {
+    const el = $id(id); if (!el) return;
+    el.addEventListener('pointerdown', e => { e.preventDefault(); el.classList.add('active'); fn(); });
+    const end = () => el.classList.remove('active');
+    el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+  };
+  hold('tcLeft', () => (input.left = true), () => (input.left = false));
+  hold('tcRight', () => (input.right = true), () => (input.right = false));
+  hold('tcGas', () => (input.throttle = 1), () => (input.throttle = 0));
+  hold('tcBrake', () => (input.brake = 1), () => (input.brake = 0));
+  hold('tcErs', () => (input.overtake = true), () => (input.overtake = false));
+  tap('tcDrs', () => (input.drsWant = true));
+  tap('tcReset', () => resetCar());
+  tap('tcMenu', () => backToMenu());
+  tap('tcFull', () => toggleFullscreen());
 }
 
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 const camPos = new THREE.Vector3();
+let prevCamMode = null;   // remembers your view while a cinematic camera takes over
 let camInit = false;
 let acc = 0, lastT = performance.now(), lcdAcc = 0, pitchSm = 0, slopeSm = 0;
 const FIXED = 1 / 120;
+
+// HUD shift-light strip: 15 LEDs, lit by rpm, all flashing blue at the limiter
+const shiftEls = [];
+{ const sl = document.getElementById('shiftlights');
+  for (let i = 0; i < 15; i++) { const s = document.createElement('span'); sl.appendChild(s); shiftEls.push(s); } }
+function updateShiftLights(rpmFrac, driving, flash) {
+  document.getElementById('shiftlights').classList.toggle('show', !!driving);
+  if (!driving) return;
+  const lit = Math.round(rpmFrac * 15);
+  for (let i = 0; i < 15; i++) shiftEls[i].className = flash ? 'b' : (i < lit ? (i < 9 ? 'g' : 'r') : '');
+}
 
 function frame() {
   if (window.__gen !== GEN) return; // a newer module instance took over
@@ -2195,6 +2826,16 @@ function frame() {
   for (const w of car.userData.wheels) w.rotation.x += speed / (w.userData.radius || 0.44) * dt;
   for (const h of car.userData.hubs) if (h.userData.front) h.rotation.y = state.steer * 0.35;
   car.userData.steeringWheel.rotation.z = -state.steer * 1.6;
+
+  // cinematic cameras (pit stop, podium, race-start, broadcast) play in the
+  // chase view — if you're in cockpit or nose-pod, drop to the main camera for
+  // the duration (clearing the cockpit vignette) and restore your view after
+  const inCinematic = state.pitFrozen || podiumActive || tvMode || (sess.mode === 'race' && sess.phase === 'lights');
+  if (inCinematic && prevCamMode === null && camMode !== 0) {
+    prevCamMode = camMode; camMode = 0; document.body.classList.remove('cockpit');
+  } else if (!inCinematic && prevCamMode !== null) {
+    camMode = prevCamMode; prevCamMode = null; document.body.classList.toggle('cockpit', camMode >= 1);
+  }
 
   // camera
   const fwdX = Math.sin(state.heading), fwdZ = Math.cos(state.heading);
@@ -2234,14 +2875,58 @@ function frame() {
   camera.fov = (camMode === 0 ? 68 : camMode === 1 ? cfg.fov : 82) + Math.min(speed * 0.12, 14);
   camera.updateProjectionMatrix();
 
+  // cinematic camera overrides: podium, pit stop, race-start grid intro, TV/replay
+  if (podiumActive) {
+    podiumT += dt;
+    const tt = podium.userData.toTrack, sway = Math.sin(podiumT * 0.35) * 2;
+    camera.position.set(podium.position.x + tt.x * 13 - tt.z * sway, podium.position.y + 5.0, podium.position.z + tt.z * 13 + tt.x * sway);
+    camera.lookAt(podium.position.x, podium.position.y + 2.2, podium.position.z);
+    camera.fov = 40; camera.updateProjectionMatrix();
+  } else if (state.pitFrozen) {
+    car.updateMatrixWorld(true);
+    const c = new THREE.Vector3(6.2, 2.4, 3.4).applyMatrix4(car.matrixWorld);
+    camPos.lerp(c, 1 - Math.exp(-dt * 5));
+    camera.position.copy(camPos);
+    camera.lookAt(car.position.x, car.position.y + 0.7, car.position.z);
+    camera.fov = 46; camera.updateProjectionMatrix();
+  } else if (sess.mode === 'race' && sess.phase === 'lights' && sess.lightT < 4) {
+    // grid intro: slow low orbit while the first lights build, then (lightT >= 4)
+    // hand back to the driving view so you settle in and watch the last lights go
+    // out from the cockpit — you get the launch, not a camera cut at lights-out
+    const a = sess.lightT * 0.5 + 1.4, R = 11;
+    camPos.lerp(new THREE.Vector3(state.x + Math.sin(a) * R, info.y + 2.7, state.z + Math.cos(a) * R), 1 - Math.exp(-dt * 4));
+    camera.position.copy(camPos);
+    camera.lookAt(state.x, info.y + 0.6, state.z);
+    camera.fov = 38; camera.updateProjectionMatrix();
+  } else if (tvMode) {
+    // nearest trackside camera, framing the car with a long lens when far
+    let best = TV_CAMS[0], bd = 1e18;
+    for (const cpos of TV_CAMS) { const d = cpos.distanceToSquared(car.position); if (d < bd) { bd = d; best = cpos; } }
+    camera.position.copy(best);
+    camera.lookAt(car.position.x, car.position.y + 0.5, car.position.z);
+    camera.fov = Math.max(14, Math.min(40, 1600 / Math.max(20, Math.sqrt(bd))));
+    camera.updateProjectionMatrix();
+  }
+
   // sun shadow follows car
   sun.position.set(state.x - 350, info.y + 500, state.z + 200);
   sun.target.position.set(state.x, info.y, state.z);
 
   const kmh = speed * 3.6;
   const rpmFrac = updateHUD(kmh);
+  // rev lights: wheel LEDs + HUD shift strip, flashing blue at the limiter
   const lit = Math.round(rpmFrac * 12);
-  car.userData.leds.forEach((led, k) => { led.visible = k < lit; });
+  const limiterFlash = rpmFrac > 0.985 && Math.floor(now / 55) % 2 === 0;
+  car.userData.leds.forEach((led, k) => {
+    led.visible = limiterFlash || k < lit;
+    led.material.color.setHex(limiterFlash ? 0x2040ff : (k < 6 ? 0x1fbf3a : k < 9 ? 0xd82020 : 0x2040ff));
+  });
+  updateShiftLights(rpmFrac, sess.mode !== 'menu', limiterFlash);
+  // rear-wing DRS flap lies flat when open
+  if (car.userData.drsFlap) {
+    const f = car.userData.drsFlap;
+    f.rotation.x += ((state.drsOpen ? -0.05 : -0.5) - f.rotation.x) * Math.min(1, dt * 12);
+  }
 
   // kerb rumble: shake the camera when riding the painted kerbs
   const hwK = info.lateral > 0 ? HWp[info.idx] : HWm[info.idx];
@@ -2253,46 +2938,67 @@ function frame() {
     camPos.x += (Math.random() - 0.5) * 0.015;
   }
 
-  // steering-wheel LCD (redrawn ~10x/s)
+  // steering-wheel LCD (redrawn ~10x/s): gear, speed, ERS battery + mode, delta
   lcdAcc += dt;
   if (lcdAcc > 0.1) {
     lcdAcc = 0;
     const { ctx, tex } = car.userData.lcd;
     ctx.fillStyle = '#0a0e12'; ctx.fillRect(0, 0, 256, 160);
     ctx.strokeStyle = '#2a3644'; ctx.lineWidth = 3; ctx.strokeRect(2, 2, 252, 156);
+    // gear (big, centre)
     ctx.fillStyle = '#e8eef4'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = '900 84px Arial';
-    ctx.fillText(kmh < 3 ? 'N' : String(gearAt(kmh) + 1), 128, 84);
-    ctx.font = 'bold 26px Arial'; ctx.textAlign = 'left';
+    ctx.font = '900 74px Arial';
+    ctx.fillText(kmh < 3 ? 'N' : String(gearAt(kmh) + 1), 128, 66);
+    // speed (top-left) + lap (top-right)
+    ctx.font = 'bold 26px Arial'; ctx.textAlign = 'left'; ctx.fillStyle = '#e8eef4';
     ctx.fillText(String(Math.round(kmh)), 12, 24);
-    ctx.font = '13px Arial'; ctx.fillStyle = '#8899aa';
-    ctx.fillText('KM/H', 12, 44);
+    ctx.font = '12px Arial'; ctx.fillStyle = '#8899aa'; ctx.fillText('KM/H', 12, 42);
     ctx.textAlign = 'right'; ctx.font = 'bold 20px Arial'; ctx.fillStyle = '#e8eef4';
-    ctx.fillText('L' + state.lap, 246, 24);
+    ctx.fillText('L' + Math.max(state.lap, 0), 246, 22);
+    // ERS battery bar (bottom-left)
+    ctx.fillStyle = '#8899aa'; ctx.font = '12px Arial'; ctx.textAlign = 'left';
+    ctx.fillText('BATT ' + Math.round(state.ers * 100) + '%', 12, 114);
+    ctx.fillStyle = '#1a2430'; ctx.fillRect(12, 124, 110, 12);
+    ctx.fillStyle = state.ersOT ? '#ffd34d' : state.ersDeploy ? '#39d0ff' : '#25c46a';
+    ctx.fillRect(12, 124, 110 * state.ers, 12);
+    // ERS mode (bottom-right)
+    ctx.textAlign = 'right'; ctx.font = 'bold 15px Arial';
+    ctx.fillStyle = state.ersOT ? '#ffd34d' : state.ersDeploy ? '#39d0ff' : '#8899aa';
+    ctx.fillText(state.ersOT ? 'OVERTAKE' : state.ersDeploy ? 'DEPLOY' : (state.brk > 0.05 ? 'HARVEST' : 'BALANCED'), 246, 114);
+    // delta (centre) + DRS flag when open
     if (state.deltaStr) {
-      ctx.textAlign = 'center'; ctx.font = 'bold 26px Arial';
+      ctx.textAlign = 'center'; ctx.font = 'bold 22px Arial';
       ctx.fillStyle = state.deltaAhead ? '#4be07a' : '#ff6060';
-      ctx.fillText(state.deltaStr, 128, 140);
+      ctx.fillText(state.deltaStr, 128, 148);
+    }
+    if (state.drsOpen) {
+      ctx.fillStyle = '#25e05a'; ctx.fillRect(196, 140, 40, 16);
+      ctx.fillStyle = '#04240f'; ctx.font = '900 11px Arial'; ctx.textAlign = 'center';
+      ctx.fillText('DRS', 216, 148);
     }
     tex.needsUpdate = true;
   }
 
   updateAudio(rpmFrac, input.throttle, speed);
   updatePitStop(dt);
+  updatePitCrew(dt, now);
+  updateConfetti(dt);
   updateSession(dt);
   drawMinimap();
 
-  renderer.render(scene, camera);
+  if (composer) composer.render(); else renderer.render(scene, camera);
+  renderRearView();
 }
 frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, updateSession, updateRivals, startRace, V_ALLOW, RACE, TRACK_LEN, idxAtU,
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, showPodium, podium, endRace, composer, renderRearView, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  if (composer) composer.setSize(innerWidth, innerHeight);
 });

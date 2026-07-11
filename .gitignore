@@ -2,7 +2,8 @@
 node_modules/
 dist/
 
-# personal drop-in assets — licensed content, not redistributable
+# large drop-in binaries — kept out of the source branch for size; bundled at
+# deploy time. Models are free-to-use (see CREDITS.md for attribution).
 public/car.glb
 public/wheel.glb
 public/engine.wav

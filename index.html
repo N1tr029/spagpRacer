@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Ardennes GP" />
+<meta name="theme-color" content="#0a0d12" />
 <title>Ardennes GP — Spa-Francorchamps Time Trial</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0d12; font-family: "Helvetica Neue", Arial, sans-serif; }
@@ -56,9 +61,41 @@
     padding: 15px 0; font-size: 17px; font-weight: 800; letter-spacing: 1.5px; cursor: pointer; }
   #startBtn:hover { background: #24d466; }
   #title .go { margin-top: 12px; font-size: 12px; opacity: .5; }
+  #credits { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 10.5px;
+    opacity: .45; line-height: 1.6; padding: 0 20px; pointer-events: auto; }
+  #credits a { color: #9cc4ff; text-decoration: none; }
+  #credits a:hover { text-decoration: underline; }
+
+  /* --- mobile / touch controls (shown only on touch devices while driving) --- */
+  #touchctl { position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none; }
+  body.touch.driving #touchctl { display: block; }
+  .tc { position: absolute; pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 800; letter-spacing: 1px; text-shadow: 0 1px 2px #000;
+    background: rgba(18,22,30,.4); border: 2px solid rgba(255,255,255,.26); border-radius: 16px; }
+  .tc.active { background: rgba(225,6,0,.55); border-color: #ff6650; }
+  .tc.steer { width: 78px; height: 96px; bottom: 22px; font-size: 46px; padding-bottom: 6px; }
+  #tcLeft { left: 16px; } #tcRight { left: 102px; }
+  .tc.brake { width: 92px; height: 96px; bottom: 22px; right: 124px; font-size: 15px; background: rgba(70,22,22,.42); }
+  .tc.brake.active { background: rgba(230,60,40,.6); border-color: #ff8a70; }
+  .tc.gas { width: 104px; height: 118px; bottom: 22px; right: 14px; font-size: 17px; background: rgba(22,58,28,.44); }
+  .tc.gas.active { background: rgba(40,200,90,.6); border-color: #77ff99; }
+  .tc.mini { width: 70px; height: 50px; font-size: 14px; }
+  #tcDrs { bottom: 148px; right: 14px; } #tcErs { bottom: 148px; right: 92px; }
+  .tc.small { width: 74px; height: 36px; font-size: 12px; bottom: 26px; opacity: .82; }
+  #tcMenu { left: 50%; transform: translateX(-50%); }
+  #tcReset { left: 50%; transform: translateX(calc(-50% - 84px)); }
+  #tcFull { left: 50%; transform: translateX(calc(-50% + 84px)); font-size: 18px; }
+  body.touch #help, body.touch #mfd, body.touch #tirebox { display: none; }   /* declutter the phone HUD */
+  body.touch #speedo { bottom: 220px; right: 20px; }                          /* lift the readout above the pedals */
+  #rotate { position: fixed; inset: 0; z-index: 30; display: none; background: #0a0d12; color: #fff;
+    align-items: center; justify-content: center; text-align: center; font-size: 19px; font-weight: 700;
+    letter-spacing: 1px; line-height: 1.6; padding: 30px; }
+  @media (orientation: portrait) { body.touch #rotate { display: flex; } }
 
   #results { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column;
-    background: rgba(6,9,14,.9); z-index: 11; color: #fff; text-align: center; }
+    background: rgba(6,9,14,.78); z-index: 11; color: #fff; text-align: center; }
+  #results h2 span, #results .grid { text-shadow: 0 2px 8px rgba(0,0,0,.8); }
   #results.show { display: flex; }
   #results h2 { font-size: 34px; margin: 0 0 4px; letter-spacing: 2px; }
   #results h2 span { color: #ffd34d; }
@@ -96,18 +133,34 @@
     border: 1px solid rgba(255,255,255,.14); }
   #modebar .q { color: #e10600; }
   #modebar .clock { color: #ffd34d; font-variant-numeric: tabular-nums; margin-left: 8px; }
-  #tower { right: 24px; top: 232px; width: 178px; font-size: 12px; display: none;
-    background: rgba(10,14,20,.72); border-radius: 8px; padding: 6px; }
+  #tower { right: 24px; top: 232px; width: 212px; font-size: 12px; display: none;
+    background: rgba(10,14,20,.78); border-radius: 8px; padding: 6px 6px 7px; }
   #tower.show { display: block; }
-  #tower .th { font-size: 10px; letter-spacing: 1.5px; opacity: .55; padding: 2px 6px 5px; }
-  #tower .r { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px;
-    font-variant-numeric: tabular-nums; }
-  #tower .r .pos { width: 16px; opacity: .6; text-align: right; }
-  #tower .r .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-  #tower .r .nm { flex: 1; font-weight: 700; letter-spacing: .5px; }
-  #tower .r .tm { opacity: .85; }
-  #tower .r.you { background: rgba(225,6,0,.28); }
+  #tower .th { font-size: 10px; letter-spacing: 1.5px; opacity: .6; padding: 2px 4px 6px;
+    display: flex; justify-content: space-between; align-items: center; }
+  #tower .th .laps { color: #ffd34d; font-weight: 800; letter-spacing: 1px; }
+  #tower .r { display: flex; align-items: center; gap: 5px; padding: 2.5px 4px; border-radius: 4px;
+    font-variant-numeric: tabular-nums; position: relative; }
+  #tower .r .pos { width: 15px; opacity: .55; text-align: right; font-weight: 700; }
+  #tower .r .bar { width: 3.5px; height: 15px; border-radius: 1px; flex: none; }
+  #tower .r .nm { flex: 1; font-weight: 700; letter-spacing: .3px; white-space: nowrap; overflow: hidden; }
+  #tower .r .tyre { width: 15px; height: 15px; border-radius: 50%; flex: none; font-size: 9px;
+    font-weight: 900; display: flex; align-items: center; justify-content: center; border: 1.5px solid; }
+  #tower .r .gap { width: 48px; text-align: right; opacity: .9; font-size: 11.5px; }
+  #tower .r.you { background: rgba(225,6,0,.30); }
   #tower .r.you .nm { color: #fff; }
+  #tower .r.fastest .nm { color: #c98bff; }
+  #tower .r.fastest .pos { color: #c98bff; opacity: .9; }
+
+  #sectors { display: flex; gap: 5px; margin-top: 7px; }
+  #sectors .s { flex: 1; font-size: 12.5px; font-weight: 800; font-variant-numeric: tabular-nums;
+    padding: 3px 2px 4px; border-radius: 4px; background: rgba(255,255,255,.09); text-align: center;
+    color: #cfd6de; line-height: 1.1; }
+  #sectors .s .lbl { display: block; font-size: 8.5px; opacity: .55; letter-spacing: 1px; font-weight: 700; }
+  #sectors .s.p { background: rgba(150,60,220,.9); color: #fff; }
+  #sectors .s.g { background: rgba(38,175,88,.9); color: #fff; }
+  #sectors .s.y { background: rgba(210,178,40,.82); color: #1a1200; }
+  #sectors .s.cur { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.55); }
 
   #tirebox { right: 28px; bottom: 220px; text-align: right; font-variant-numeric: tabular-nums; }
   #tirebox .trow { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
@@ -129,6 +182,48 @@
     border: 2px solid #4a4a4a; box-shadow: inset 0 -3px 6px rgba(0,0,0,.5); }
   #startlights span.on { background: radial-gradient(circle at 40% 35%, #ff7a5a, #e01000); border-color: #ff5533; box-shadow: 0 0 26px #ff2200; }
   #startlights.go span { background: radial-gradient(circle at 40% 35%, #7affab, #12b048); border-color: #22e055; box-shadow: 0 0 26px #22e055; }
+
+  #rearview { top: 52px; left: 50%; transform: translateX(-50%); width: min(460px, 42vw); aspect-ratio: 640 / 180;
+    border: 2px solid rgba(255,255,255,.32); border-radius: 7px; box-shadow: 0 3px 12px rgba(0,0,0,.5); display: none; }
+  #rearview.show { display: block; }
+
+  #shiftlights { left: 50%; transform: translateX(-50%); top: 6px; display: none; gap: 4px; }
+  #shiftlights.show { display: flex; }
+  #shiftlights span { width: 12px; height: 12px; border-radius: 50%; background: #1a1d22; box-shadow: inset 0 0 2px #000; }
+  #shiftlights span.g { background: #25e05a; box-shadow: 0 0 7px #25e05a; }
+  #shiftlights span.r { background: #ff3020; box-shadow: 0 0 7px #ff3020; }
+  #shiftlights span.b { background: #2f80ff; box-shadow: 0 0 10px #4f96ff; }
+
+  #ersrow { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 7px 0 2px auto; }
+  #ersbar { width: 150px; height: 6px; background: rgba(255,255,255,.15); border-radius: 3px; overflow: hidden; }
+  #ersfill { height: 100%; width: 100%; background: linear-gradient(90deg, #12c46a, #8ef0b0); }
+  #erspct { font-size: 12px; opacity: .75; font-variant-numeric: tabular-nums; width: 34px; text-align: right; }
+  #ersmode { font-size: 11px; letter-spacing: 1.5px; opacity: .55; text-align: right; }
+  #ersmode.deploy { color: #39d0ff; opacity: .95; }
+  #ersmode.ot { color: #ffd34d; opacity: 1; }
+
+  #drs { left: 50%; transform: translateX(-50%); bottom: 152px; font-size: 21px; font-weight: 900;
+    letter-spacing: 3px; padding: 4px 15px; border-radius: 8px; border: 2px solid transparent; opacity: 0;
+    transition: opacity .15s; }
+  #drs.avail { opacity: 1; color: #39d0ff; border-color: #39d0ff; background: rgba(10,30,45,.5); }
+  #drs.open { opacity: 1; color: #04240f; border-color: #25e05a; background: #25e05a; text-shadow: none; }
+
+  #mfd { left: 24px; bottom: 60px; background: rgba(10,14,20,.72); border-radius: 8px; padding: 7px 9px; display: none; }
+  #mfd.show { display: block; }
+  #mfd .tlbl { font-size: 9px; letter-spacing: 1.5px; opacity: .55; margin-bottom: 4px; }
+  #mfd .tgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; width: 66px; }
+  #mfd .tt { height: 21px; border-radius: 3px; display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 800; font-variant-numeric: tabular-nums; color: #06090d; background: #2a3138; }
+  #mfd .minfo { display: flex; gap: 9px; margin-top: 6px; font-size: 10px; letter-spacing: .3px; opacity: .8; }
+  #mfd .minfo b { color: #ffd34d; font-weight: 800; }
+
+  #flag { left: 50%; transform: translateX(-50%); top: 188px; font-size: 15px; font-weight: 900; letter-spacing: 3px;
+    padding: 4px 16px; border-radius: 6px; opacity: 0; transition: opacity .2s; }
+  #flag.blue { opacity: 1; background: #1560d0; color: #fff; }
+  #flag.yellow { opacity: 1; background: #f4c60b; color: #201700; }
+  #penalty { left: 50%; transform: translateX(-50%); top: 216px; font-size: 14px; font-weight: 800;
+    letter-spacing: 2px; color: #ff6a3d; opacity: 0; }
+  #penalty.show { opacity: 1; }
 </style>
 </head>
 <body>
@@ -161,8 +256,21 @@
           <button data-v="track" class="on">Track</button><button data-v="garage">Garage (pit lane)</button>
         </div>
       </div>
+      <div class="opts" id="optQuality">
+        <label>Graphics</label>
+        <div class="seg" data-opt="quality">
+          <button data-v="low">Low</button><button data-v="medium">Medium</button><button data-v="high">High</button>
+        </div>
+      </div>
       <button id="startBtn">START ENGINE &#9654;</button>
       <div class="go">or press Enter</div>
+    </div>
+    <div id="credits">
+      3D models via Sketchfab:
+      <a href="https://sketchfab.com/3d-models/f1-2025-mclaren-mcl39-c6194270002b401bb25be7e35ab56e34" target="_blank" rel="noopener">McLaren MCL39</a>
+      &middot;
+      <a href="https://sketchfab.com/3d-models/f1-steering-wheel-w11-97e6f81365714a78a784c4bc92903b7b" target="_blank" rel="noopener">F1 W11 steering wheel</a>
+      &nbsp;&middot;&nbsp; Track &amp; forest data &copy; OpenStreetMap contributors (ODbL)
     </div>
   </div>
   <div id="results">
@@ -176,6 +284,8 @@
     <div id="speed">0</div>
     <div id="speedUnit">KM/H</div>
     <div id="gear">N</div>
+    <div id="ersrow"><div id="ersbar"><div id="ersfill"></div></div><span id="erspct">100%</span></div>
+    <div id="ersmode">ERS BALANCED</div>
   </div>
   <div class="hud" id="timing">
     <div class="lap-current" id="lapTime">0:00.000</div>
@@ -183,8 +293,16 @@
     <div class="row"><span class="label">LAST</span><span id="lastLap">—</span></div>
     <div class="row"><span class="label">BEST</span><span id="bestLap">—</span></div>
     <div class="row"><span class="label">LAP</span><span id="lapCount">0</span></div>
+    <div id="sectors">
+      <div class="s" id="sec0"><span class="lbl">S1</span><span id="sec0v">—</span></div>
+      <div class="s" id="sec1"><span class="lbl">S2</span><span id="sec1v">—</span></div>
+      <div class="s" id="sec2"><span class="lbl">S3</span><span id="sec2v">—</span></div>
+    </div>
   </div>
   <div class="hud" id="lapflash"></div>
+  <div class="hud" id="rearview"></div>
+  <div class="hud" id="shiftlights"></div>
+  <div class="hud" id="drs">DRS</div>
   <div class="hud" id="modebar">PRACTICE</div>
   <div class="hud" id="startlights"><span></span><span></span><span></span><span></span><span></span></div>
   <div class="hud" id="tower"></div>
@@ -195,9 +313,19 @@
     <div class="trow"><div id="tireWearBar"><div id="tireWearFill"></div></div><span id="tireWearPct">0%</span><div id="tireComp">M</div></div>
     <div id="tireNextRow">NEXT <span id="tireNext">M</span></div>
   </div>
+  <div class="hud" id="flag"></div>
+  <div class="hud" id="penalty"></div>
+  <div class="hud" id="mfd">
+    <div class="tlbl">TYRES °C</div>
+    <div class="tgrid">
+      <div class="tt" id="ttFL">—</div><div class="tt" id="ttFR">—</div>
+      <div class="tt" id="ttRL">—</div><div class="tt" id="ttRR">—</div>
+    </div>
+    <div class="minfo"><span>FUEL <b id="mFuel">100</b></span><span>ENG <b id="mMix">STD</b></span><span>BB <b id="mBB">62%</b></span></div>
+  </div>
   <canvas id="minimap" width="190" height="190"></canvas>
   <div class="hud" id="help">
-    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>1/2/3</b> tyres &nbsp; <b>O</b> setup &nbsp; <b>Esc</b> menu &nbsp; <b>M</b> mute
+    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>Shift</b> ERS boost &nbsp; <b>Space</b> DRS &nbsp; <b>E</b> ERS &nbsp; <b>Q</b> engine &nbsp; <b>[ ]</b> brake bias &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>F</b> rear view &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>1/2/3</b> tyres &nbsp; <b>O</b> setup &nbsp; <b>Esc</b> menu &nbsp; <b>M</b> mute
   </div>
   <div id="settings">
     <div class="tabs">
@@ -208,6 +336,18 @@
     <div id="paneDriver" style="display:none"></div>
     <button class="reset" id="setupReset">RESET TO DEFAULTS</button>
     <div class="hint">changes save automatically</div>
+  </div>
+  <div id="rotate"><div><div style="font-size:44px">&#8635;</div>Rotate your phone to landscape to race</div></div>
+  <div id="touchctl">
+    <div class="tc steer" id="tcLeft">‹</div>
+    <div class="tc steer" id="tcRight">›</div>
+    <div class="tc mini" id="tcErs">ERS</div>
+    <div class="tc mini" id="tcDrs">DRS</div>
+    <div class="tc brake" id="tcBrake">BRAKE</div>
+    <div class="tc gas" id="tcGas">GAS</div>
+    <div class="tc small" id="tcReset">RESET</div>
+    <div class="tc small" id="tcMenu">MENU</div>
+    <div class="tc small" id="tcFull">&#9974;</div>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>
