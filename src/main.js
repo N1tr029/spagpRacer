@@ -11,6 +11,10 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import trackData from './track.json';
 import forestData from './forest.json';
 
+// base-relative asset root, so /public files resolve whether the game is served
+// from a domain root or a subpath (e.g. GitHub Pages /spagpRacer/)
+const ASSET = import.meta.env.BASE_URL;
+
 // real OSM forest extent around Spa (landuse=forest), rasterised to a grid in
 // game coordinates — trees only grow where there's actually forest, so La Source
 // and the pit straight stay open while Kemmel/Blanchimont are tree-lined
@@ -346,7 +350,7 @@ function addRibbonUVs(mesh, uStart, uEnd, vMeters) {
   // sample only the clean asphalt band (0.20–0.80), skipping the texture's
   // baked-in white edge lines so the whole surface reads as uniform tar
   addRibbonUVs(road, 0.20, 0.80, 9);
-  surfaceTex('/textures/road.png', t => {
+  surfaceTex(ASSET + 'textures/road.png', t => {
     // dark tint pulls the medium-grey photo asphalt toward real charcoal tar
     road.material = new THREE.MeshStandardMaterial({ map: t, color: 0x5f6469, roughness: 0.97 });
   });
@@ -455,7 +459,7 @@ for (const side of [1, -1]) {
   g.setIndex(idx);
   g.computeVertexNormals();
   const shoulderMat = new THREE.MeshStandardMaterial({ color: 0x4d7c3c, roughness: 1, side: THREE.DoubleSide });
-  surfaceTex('/textures/grass.png', t => {
+  surfaceTex(ASSET + 'textures/grass.png', t => {
     shoulderMat.map = t; shoulderMat.color.set(0xffffff); shoulderMat.needsUpdate = true;
   });
   const m = new THREE.Mesh(g, shoulderMat);
@@ -532,7 +536,7 @@ function terrainHeight(x, z) {
   g.setAttribute('color', new THREE.BufferAttribute(colA, 3));
   g.computeVertexNormals();
   const terrMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
-  surfaceTex('/textures/grass.png', t => {
+  surfaceTex(ASSET + 'textures/grass.png', t => {
     t.repeat.set(320, 320);
     terrMat.map = t; terrMat.vertexColors = false; terrMat.color.set(0x83a257); terrMat.needsUpdate = true;   // richer Ardennes green
   });
@@ -1625,7 +1629,7 @@ function initAudio() {
   const master = ctx.createGain(); master.gain.value = 0;
   const comp = ctx.createDynamicsCompressor();
   master.connect(comp); comp.connect(ctx.destination);
-  fetch('/engine.wav')
+  fetch(ASSET + 'engine.wav')
     .then(r => (r.ok && (r.headers.get('content-type') || '').includes('audio')) ? r.arrayBuffer() : Promise.reject())
     .then(b => ctx.decodeAudioData(b))
     .then(buf => {
@@ -1962,15 +1966,15 @@ function attachCarModel(model) {
 }
 
 const draco = new DRACOLoader();
-draco.setDecoderPath('/draco/');
+draco.setDecoderPath(ASSET + 'draco/');
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(draco);
-gltfLoader.load('/car.glb', g => attachCarModel(g.scene), undefined,
+gltfLoader.load(ASSET + 'car.glb', g => attachCarModel(g.scene), undefined,
   () => {}); // no file — placeholder car stays
 
 // steering wheel model: replaces the primitive wheel in the cockpit; the live
 // LCD and LED strip stay, floating on the model's screen area
-gltfLoader.load('/wheel.glb', g => {
+gltfLoader.load(ASSET + 'wheel.glb', g => {
   const model = g.scene;
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
