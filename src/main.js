@@ -7,6 +7,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import trackData from './track.json';
 import forestData from './forest.json';
 
@@ -164,7 +165,7 @@ scene.fog = new THREE.Fog(0x9dc0e6, 550, 4200);        // lighter haze, pushed b
 
 const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.3, 6000);
 
-const hemi = new THREE.HemisphereLight(0xd8e8ff, 0x42603a, 1.05);
+const hemi = new THREE.HemisphereLight(0xd8e8ff, 0x42603a, 0.6);   // lower: the env map now adds ambient fill
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffe7bd, 2.15);
 sun.position.set(-350, 500, 200);
@@ -184,6 +185,7 @@ composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.7, 0.82);
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
+composer.addPass(new SMAAPass(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio()));
 // colour grade: gentle contrast + saturation + broadcast vignette, applied to
 // the tone-mapped image. This is what pulls the Ardennes greens out of the wash.
 const gradePass = new ShaderPass({
@@ -202,6 +204,22 @@ const gradePass = new ShaderPass({
     }`,
 });
 composer.addPass(gradePass);
+
+// Image-based lighting: a gradient sky/ground env so the glossy car body
+// catches real sky reflections (and everything gets softer ambient fill)
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const es = new THREE.Scene();
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 24, 16), new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    uniforms: { top: { value: new THREE.Color(0x3f7fce) }, mid: { value: new THREE.Color(0xc2d8ec) }, bot: { value: new THREE.Color(0x69804f) } },
+    vertexShader: 'varying vec3 vp; void main(){ vp = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'varying vec3 vp; uniform vec3 top, mid, bot; void main(){ float h = normalize(vp).y; vec3 c = h > 0.0 ? mix(mid, top, h) : mix(mid, bot, -h); gl_FragColor = vec4(c, 1.0); }',
+  }));
+  es.add(sky);
+  scene.environment = pmrem.fromScene(es).texture;
+  sky.geometry.dispose(); sky.material.dispose(); pmrem.dispose();
+}
 
 // Soft cloud billboards for sky depth (sprites always face the camera)
 {
@@ -1768,7 +1786,15 @@ function attachCarModel(model) {
   wrap.position.set(-center.x, -box.min.y + 0.02, -center.z);
   const outer = new THREE.Group();
   outer.add(wrap);
-  outer.traverse(o => { if (o.isMesh) { o.castShadow = true; if (o.material) o.material.side = THREE.DoubleSide; } });
+  outer.traverse(o => {
+    if (!o.isMesh) return;
+    o.castShadow = true;
+    for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+      if (!m) continue;
+      m.side = THREE.DoubleSide;
+      if ('envMapIntensity' in m) { m.envMapIntensity = 1.5; m.needsUpdate = true; }   // glossy F1 bodywork catches the sky
+    }
+  });
   car.add(outer);
   outer.updateMatrixWorld(true);
   car.userData.imported = outer;
