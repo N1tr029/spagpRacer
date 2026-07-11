@@ -1179,7 +1179,7 @@ gltfLoader.load('/wheel.glb', g => {
   // shrink to the screen cutout, and drop the redundant procedural LEDs
   // (the model has its own baked light strip)
   const lcd = car.userData.lcdMesh;
-  lcd.position.set(0, 0.025, -0.058);
+  lcd.position.set(0, 0.045, -0.058);
   lcd.rotation.x = -0.30;
   lcd.scale.set(0.62, 0.62, 1);
   for (const led of car.userData.leds) led.visible = false;
@@ -1246,9 +1246,9 @@ function frame() {
   if (camMode === 0) {
     target = new THREE.Vector3(state.x - fwdX * 8.5, info.y + 3.1 - slope * 3.5, state.z - fwdZ * 8.5);
   } else if (camMode === 1) {
-    // cockpit: driver's eye at the headrest opening (measured from the
-    // model), looking level over the wheel seated in the cockpit
-    target = new THREE.Vector3(state.x - fwdX * 0.08, info.y + 0.93, state.z - fwdZ * 0.08);
+    // cockpit: helmet-cam framing — close behind the wheel, pitched
+    // slightly down so the wheel fills the lower half under the halo
+    target = new THREE.Vector3(state.x + fwdX * 0.06, info.y + 0.90, state.z + fwdZ * 0.06);
   } else {
     // nose pod: the higher over-cockpit view
     target = new THREE.Vector3(state.x - fwdX * 0.15, info.y + 1.26, state.z - fwdZ * 0.15);
@@ -1263,9 +1263,9 @@ function frame() {
   }
   camera.position.copy(camPos);
   // cockpit view looks dead level so the horizon sits mid-frame
-  const lookY = camMode === 1 ? 0.93 : 1.0;
+  const lookY = camMode === 1 ? 0.12 : 1.0; // cockpit pitches gently down toward the road
   camera.lookAt(state.x + fwdX * 14, info.y + lookY + slope * 14, state.z + fwdZ * 14);
-  camera.fov = (camMode === 0 ? 68 : 82) + Math.min(speed * 0.12, 14);
+  camera.fov = (camMode === 0 ? 68 : camMode === 1 ? 66 : 82) + Math.min(speed * 0.12, 14);
   camera.updateProjectionMatrix();
 
   // sun shadow follows car
