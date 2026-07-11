@@ -2129,6 +2129,74 @@ function updateStartLights(lit, allOff) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Pit crew — a small crew that swarms the car during a stop (cutscene)
+// ---------------------------------------------------------------------------
+function makeCrewman(color, gun) {
+  const g = new THREE.Group();
+  const suit = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x15171b, roughness: 0.6 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xcf9b6f, roughness: 0.75 });
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.32), suit); torso.position.y = 1.12; g.add(torso);
+  const hip = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.34, 0.3), dark); hip.position.y = 0.74; g.add(hip);
+  for (const s of [-1, 1]) { const leg = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.72, 0.22), dark); leg.position.set(s * 0.12, 0.36, 0); g.add(leg); }
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), skin); head.position.y = 1.55; g.add(head);
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), suit); helmet.position.y = 1.57; helmet.scale.y = 0.9; g.add(helmet);
+  for (const s of [-1, 1]) { const arm = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.46, 0.15), suit); arm.position.set(s * 0.3, 1.12, 0.06); arm.rotation.x = -0.7; g.add(arm); }
+  if (gun) {
+    const wg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.05, 0.55, 8), new THREE.MeshStandardMaterial({ color: 0xffb400, roughness: 0.5, metalness: 0.4 }));
+    wg.rotation.x = Math.PI / 2; wg.position.set(0, 0.95, 0.42); g.add(wg); g.userData.gun = wg;
+  }
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  return g;
+}
+const pitCrew = new THREE.Group(); pitCrew.visible = false; scene.add(pitCrew);
+const crewGunners = [];
+let crewLollipop, crewFrontJack;
+{
+  const RED = 0xf36a00;   // papaya, matching the McLaren player car
+  const slots = [   // [x, z, faceY, gun]
+    [1.7, 1.75, -Math.PI / 2, 1], [2.55, 1.75, -Math.PI / 2, 0],
+    [-1.7, 1.75, Math.PI / 2, 1], [-2.55, 1.75, Math.PI / 2, 0],
+    [1.7, -1.55, -Math.PI / 2, 1], [2.55, -1.55, -Math.PI / 2, 0],
+    [-1.7, -1.55, Math.PI / 2, 1], [-2.55, -1.55, Math.PI / 2, 0],
+    [0, -3.5, 0, 0],   // rear jack man
+  ];
+  for (const [x, z, fy, gun] of slots) {
+    const c = makeCrewman(RED, gun);
+    c.position.set(x, 0, z); c.rotation.y = fy; c.userData.phase = Math.random() * 6.28;
+    pitCrew.add(c); if (gun) crewGunners.push(c);
+  }
+  const jm = makeCrewman(RED, 0); jm.position.set(0, 0, 3.7); jm.rotation.y = Math.PI; pitCrew.add(jm);
+  crewFrontJack = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 1.4), new THREE.MeshStandardMaterial({ color: 0x1c1e22 }));
+  crewFrontJack.position.set(0, 0.15, 3.0); pitCrew.add(crewFrontJack);
+  const lm = makeCrewman(RED, 0); lm.position.set(0, 0, 4.5); lm.rotation.y = Math.PI; pitCrew.add(lm);
+  crewLollipop = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.2, 6), new THREE.MeshStandardMaterial({ color: 0x222222 })); pole.position.y = 1.1; crewLollipop.add(pole);
+  const sign = new THREE.Mesh(new THREE.CircleGeometry(0.34, 20), new THREE.MeshBasicMaterial({ color: 0xf36a00, side: THREE.DoubleSide })); sign.position.y = 2.2; crewLollipop.add(sign);
+  crewLollipop.userData.sign = sign; crewLollipop.position.set(0, 0, 4.3); pitCrew.add(crewLollipop);
+  const tyreMat = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9 });
+  for (const [sx, sz] of [[3.3, 1.75], [-3.3, 1.75], [3.3, -1.55], [-3.3, -1.55]])
+    for (let s = 0; s < 2; s++) { const ty = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.24, 16), tyreMat); ty.position.set(sx, 0.12 + s * 0.26, sz); pitCrew.add(ty); }
+  pitCrew.traverse(o => { if (o.isMesh) o.castShadow = true; });
+}
+function updatePitCrew(dt, now) {
+  const on = state.pitFrozen;
+  pitCrew.visible = on;
+  if (!on) return;
+  pitCrew.position.copy(car.position);
+  pitCrew.rotation.y = state.heading;
+  const svc = state.pitService, working = svc > 0.3 && svc < PIT_STOP_TIME - 0.3;
+  for (const c of crewGunners) {
+    c.position.y = working ? Math.sin(now / 90 + c.userData.phase) * 0.06 - 0.15 : 0;  // crouch + bob
+    if (c.userData.gun) c.userData.gun.rotation.z += (working ? 30 : 0) * dt;
+  }
+  crewFrontJack.position.y = 0.15 + (working ? 0.12 : 0);
+  const releasing = svc > PIT_STOP_TIME - 0.4;
+  crewLollipop.rotation.x = releasing ? -1.2 : 0;
+  crewLollipop.userData.sign.material.color.setHex(releasing ? 0x1fbf3a : 0xf36a00);
+}
+
 const fmtShort = ms => !isFinite(ms) ? '—'
   : `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${Math.floor((ms % 1000) / 100)}`;
 const $id = id => document.getElementById(id);
@@ -2455,6 +2523,16 @@ function frame() {
   camera.fov = (camMode === 0 ? 68 : camMode === 1 ? cfg.fov : 82) + Math.min(speed * 0.12, 14);
   camera.updateProjectionMatrix();
 
+  // pit-stop cutscene: swing the camera to a side angle on the car + crew
+  if (state.pitFrozen) {
+    car.updateMatrixWorld(true);
+    const c = new THREE.Vector3(6.2, 2.4, 3.4).applyMatrix4(car.matrixWorld);
+    camPos.lerp(c, 1 - Math.exp(-dt * 5));
+    camera.position.copy(camPos);
+    camera.lookAt(car.position.x, car.position.y + 0.7, car.position.z);
+    camera.fov = 46; camera.updateProjectionMatrix();
+  }
+
   // sun shadow follows car
   sun.position.set(state.x - 350, info.y + 500, state.z + 200);
   sun.target.position.set(state.x, info.y, state.z);
@@ -2528,6 +2606,7 @@ function frame() {
 
   updateAudio(rpmFrac, input.throttle, speed);
   updatePitStop(dt);
+  updatePitCrew(dt, now);
   updateSession(dt);
   drawMinimap();
 
@@ -2537,7 +2616,7 @@ frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {
