@@ -122,6 +122,13 @@
   #pitmsg.show { opacity: 1; }
   #pitmsg.lim { background: rgba(18,40,58,.75); color: #39d0ff; border: 1px solid #39d0ff; }
   #pitmsg.stop { background: rgba(60,45,10,.82); color: #ffd34d; border: 1px solid #ffd34d; font-size: 22px; }
+
+  #startlights { left: 50%; transform: translateX(-50%); top: 92px; display: none; gap: 16px; }
+  #startlights.show { display: flex; }
+  #startlights span { width: 46px; height: 46px; border-radius: 50%; background: #360a0a;
+    border: 2px solid #4a4a4a; box-shadow: inset 0 -3px 6px rgba(0,0,0,.5); }
+  #startlights span.on { background: radial-gradient(circle at 40% 35%, #ff7a5a, #e01000); border-color: #ff5533; box-shadow: 0 0 26px #ff2200; }
+  #startlights.go span { background: radial-gradient(circle at 40% 35%, #7affab, #12b048); border-color: #22e055; box-shadow: 0 0 26px #22e055; }
 </style>
 </head>
 <body>
@@ -179,6 +186,7 @@
   </div>
   <div class="hud" id="lapflash"></div>
   <div class="hud" id="modebar">PRACTICE</div>
+  <div class="hud" id="startlights"><span></span><span></span><span></span><span></span><span></span></div>
   <div class="hud" id="tower"></div>
   <div class="hud" id="cornerName"></div>
   <div class="hud" id="offtrack">OFF TRACK — reduced grip</div>

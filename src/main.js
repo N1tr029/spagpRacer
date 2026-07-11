@@ -40,6 +40,38 @@ const V_ALLOW = new Float32Array(N);
       V_ALLOW[i] = Math.min(V_ALLOW[i], Math.sqrt(V_ALLOW[(i + 1) % N] ** 2 + 2 * 30 * STEP));
 }
 
+// variable track half-width: broaden the OUTSIDE of tight corners (like the real
+// wide La Source) so the car has room; the inside stays at the kerb so no edge
+// folds. HWp/HWm = half-width toward +normal / -normal.
+const HWp = new Float32Array(N).fill(HALF_W);
+const HWm = new Float32Array(N).fill(HALF_W);
+for (let i = 0; i < N; i++) {
+  const c = CURV[i], r = Math.abs(c) > 1e-5 ? 1 / Math.abs(c) : 9999;
+  if (r < 45) {
+    const extra = Math.min(5, (45 - r) / 45 * 9);
+    if (c > 0) HWm[i] = HALF_W + extra;   // inside is +normal -> widen the -normal (outside) edge
+    else HWp[i] = HALF_W + extra;
+  }
+}
+for (let pass = 0; pass < 12; pass++) {
+  const op = HWp.slice(), om = HWm.slice();
+  for (let i = 0; i < N; i++) {
+    HWp[i] = 0.5 * op[i] + 0.25 * op[(i - 1 + N) % N] + 0.25 * op[(i + 1) % N];
+    HWm[i] = 0.5 * om[i] + 0.25 * om[(i - 1 + N) % N] + 0.25 * om[(i + 1) % N];
+  }
+}
+// a wider corner gives a bigger racing-line radius -> allow more speed through it
+for (let i = 0; i < N; i++) {
+  const extra = Math.max(HWp[i], HWm[i]) - HALF_W;
+  if (extra > 0.3) {
+    const R = Math.abs(CURV[i]) > 1e-5 ? 1 / Math.abs(CURV[i]) : 9999;
+    V_ALLOW[i] = Math.min(88, Math.sqrt(11.5 * (R + extra * 1.2)));
+  }
+}
+for (let pass = 0; pass < 3; pass++)
+  for (let i = N - 1; i >= 0; i--)
+    V_ALLOW[i] = Math.min(V_ALLOW[i], Math.sqrt(V_ALLOW[(i + 1) % N] ** 2 + 2 * 30 * STEP));
+
 // Tangents and left-normals (xz plane), smoothed
 const tangents = [], normals = [];
 for (let i = 0; i < N; i++) {
@@ -193,7 +225,7 @@ function addRibbonUVs(mesh, uStart, uEnd, vMeters) {
   mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
 }
 {
-  const road = buildRibbon(i => HALF_W, i => -HALF_W, 0, i => {
+  const road = buildRibbon(i => HWp[i], i => -HWm[i], 0, i => {
     const v = 0.155 + asphaltTone[i] * 0.05;
     return { r: v, g: v, b: v + 0.008 };
   });
@@ -233,11 +265,11 @@ function kerbColor(i) {
   return (Math.floor(i / 2) % 2 === 0) ? { r: 0.86, g: 0.11, b: 0.09 } : { r: 0.93, g: 0.74, b: 0.08 };
 }
 scene.add(buildRibbon(
-  i => Math.abs(C(i)) > KERB_THRESH ? HALF_W + KERB_W : HALF_W + 0.001,
-  i => HALF_W, 0.035, kerbColor));
+  i => Math.abs(C(i)) > KERB_THRESH ? HWp[i] + KERB_W : HWp[i] + 0.001,
+  i => HWp[i], 0.035, kerbColor));
 scene.add(buildRibbon(
-  i => -HALF_W,
-  i => Math.abs(C(i)) > KERB_THRESH ? -(HALF_W + KERB_W) : -(HALF_W + 0.001), 0.035, kerbColor));
+  i => -HWm[i],
+  i => Math.abs(C(i)) > KERB_THRESH ? -(HWm[i] + KERB_W) : -(HWm[i] + 0.001), 0.035, kerbColor));
 
 // painted tarmac runoff outside medium/fast corners (asphalt apron + green band)
 const RUNOFF = i => {
@@ -245,14 +277,15 @@ const RUNOFF = i => {
   return c > 0.0045 && c < 0.022;
 };
 for (const side of [1, -1]) {
+  const hw = i => side > 0 ? HWp[i] : HWm[i];
   scene.add(buildRibbon(
-    i => side * (RUNOFF(i) ? HALF_W + KERB_W + 4.5 : HALF_W + KERB_W + 0.001),
-    i => side * (HALF_W + KERB_W),
+    i => side * (RUNOFF(i) ? hw(i) + KERB_W + 4.5 : hw(i) + KERB_W + 0.001),
+    i => side * (hw(i) + KERB_W),
     0.02,
     i => { const v = 0.15 + asphaltTone[i] * 0.03; return { r: v, g: v, b: v + 0.004 }; }));
   scene.add(buildRibbon(
-    i => side * (RUNOFF(i) ? HALF_W + KERB_W + 6.3 : HALF_W + KERB_W + 4.5 + 0.001),
-    i => side * (RUNOFF(i) ? HALF_W + KERB_W + 4.5 : HALF_W + KERB_W + 4.5),
+    i => side * (RUNOFF(i) ? hw(i) + KERB_W + 6.3 : hw(i) + KERB_W + 4.5 + 0.001),
+    i => side * (RUNOFF(i) ? hw(i) + KERB_W + 4.5 : hw(i) + KERB_W + 4.5),
     0.02,
     () => ({ r: 0.12, g: 0.42, b: 0.16 })));
 }
@@ -263,8 +296,11 @@ for (const side of [1, -1]) {
   const pos = [], uv = [], idx = [];
   for (let i = 0; i <= N; i++) {
     const p = P(i % N), n = normals[i % N];
-    const inner = side * (HALF_W + 0.001);
-    const outer = side * 22;
+    const inner = side * ((side > 0 ? HWp[i % N] : HWm[i % N]) + 0.001);
+    let outer = side * 22;
+    // clamp the inside shoulder at tight corners so it can't fold across the track
+    const cc = C(i % N);
+    if (side * cc > 0.0004) { const mx = 0.82 / Math.abs(cc); if (Math.abs(outer) > mx) outer = Math.sign(outer) * mx; }
     pos.push(p[0] + n[0] * inner, p[1] - 0.03, p[2] + n[1] * inner);
     pos.push(p[0] + n[0] * outer, p[1] - 2.6, p[2] + n[1] * outer);
     uv.push(0, i * STEP / 8, 2.2, i * STEP / 8);
@@ -478,19 +514,24 @@ const armcoTex = (() => {
   return t;
 })();
 for (const side of [1, -1]) {
-  const baseOff = side * (HALF_W + 9);
   const pos = [], idx = [], uv = [];
   for (let i = 0; i <= N; i++) {
     const ii = i % N;
     const p = P(i), n = normals[ii];
-    // on the pit side (+normal), the default 15.5 m barrier would run straight
-    // down the pit lane — push it out behind the garages there, tapering at the
-    // pit entry/exit so the loop stays continuous
+    const baseOff = side * ((side > 0 ? HWp[ii] : HWm[ii]) + 9);
+    // on the pit side (+normal), the default barrier would run straight down the
+    // pit lane — push it out behind the garages there, tapering at the pit
+    // entry/exit so the loop stays continuous
     let off = baseOff;
     if (side === 1 && pitKofTrack[ii] >= 0) {
       const pk = pitKofTrack[ii];
       const blend = pitSmooth(Math.min(pk, PIT_NN - 1 - pk) / PIT_TAPER);
       off = baseOff + blend * (33 - (HALF_W + 9));
+    } else {
+      // clamp the inside barrier at tight corners so it can't fold across the
+      // track (a hairpin whose radius < the 15.5 m offset would cross the centre)
+      const c = C(ii);
+      if (side * c > 0.0008) { const mx = 0.72 / Math.abs(c); if (Math.abs(off) > mx) off = Math.sign(off) * mx; }
     }
     const x = p[0] + n[0] * off, z = p[2] + n[1] * off;
     const y = p[1] - 1.2; // dip below the shoulder so no gap shows at the base
@@ -1043,7 +1084,7 @@ function physCore(dt) {
   const info = trackInfo(s.x, s.z, s.idx);
   s.idx = info.idx;
   // the pit lane counts as tarmac even though it sits off the main track
-  const onTrack = Math.abs(info.lateral) < HALF_W + KERB_W || s.onPitLane;
+  const onTrack = (info.lateral < HWp[s.idx] + KERB_W && info.lateral > -(HWm[s.idx] + KERB_W)) || s.onPitLane;
   onTrackState = onTrack;
   // tyre grip: compound grip × wear fall-off (steeper past the ~85% cliff),
   // folded into the surface mu so worn tyres slide on tarmac and grass alike
@@ -1166,10 +1207,10 @@ function physCore(dt) {
 
   // soft barrier at ±(HALF_W+9) — suspended on the pit lane, which lives beyond it
   const info2 = trackInfo(s.x, s.z, s.idx);
-  const lim = HALF_W + 8.4;
-  if (!s.onPitLane && Math.abs(info2.lateral) > lim) {
+  const limP = HWp[info2.idx] + 8.4, limM = HWm[info2.idx] + 8.4;
+  if (!s.onPitLane && (info2.lateral > limP || info2.lateral < -limM)) {
     const n = normals[info2.idx];
-    const over = Math.abs(info2.lateral) - lim;
+    const over = info2.lateral > limP ? info2.lateral - limP : -limM - info2.lateral;
     const sgn = Math.sign(info2.lateral);
     s.x -= n[0] * sgn * over; s.z -= n[1] * sgn * over;
     const vn = s.vx * n[0] + s.vz * n[1];
@@ -1178,22 +1219,7 @@ function physCore(dt) {
     s.vx *= 0.96; s.vz *= 0.96;
   }
 
-  // car-to-car contact: rivals are kinematic pace-setters, so a touch shoves
-  // the player aside and scrubs speed — a clumsy move gets punished
-  if (sess.mode === 'race' && sess.phase === 'racing') {
-    for (const r of rivals) {
-      const rp = r.mesh.position;
-      let dx = s.x - rp.x, dz = s.z - rp.z;
-      const d = Math.hypot(dx, dz);
-      if (d < COLL_R && d > 1e-4) {
-        const push = COLL_R - d; dx /= d; dz /= d;
-        s.x += dx * push; s.z += dz * push;
-        const vn = s.vx * dx + s.vz * dz;
-        if (vn < 0) { s.vx -= dx * vn * 1.7; s.vz -= dz * vn * 1.7; }
-        s.vx *= 0.9; s.vz *= 0.9;
-      }
-    }
-  }
+  // (car-to-car contact now handled 2-way in updateRivals, once per frame)
 
   // lap timing via progress
   const prog = info2.s;
@@ -1745,23 +1771,110 @@ scene.add(rivalsGroup);
 const rivals = RIVALS_DEF.map((def) => {
   const mesh = makeRivalCar(def.color);
   rivalsGroup.add(mesh);
-  return { def, mesh, u: 0 };
+  // dynamic driving state: v = speed (m/s), lat = offset from centre (m).
+  // skill scales corner speed (fastest driver = highest); aggression drives
+  // defending/overtaking; react = launch reaction delay at the start.
+  const skill = 1.0 - (def.lap - 136) / 12 * 0.09;
+  return { def, mesh, u: 0, v: 0, lat: 0, latV: 0, gridLat: null, skill,
+    aggr: 0.3 + Math.random() * 0.6, react: 0.12 + Math.random() * 0.35, errT: 3 + Math.random() * 6, errUntil: 0 };
 });
 const GRID_BLEND = 4.5; // seconds to merge from grid box onto the racing line
+const idxAtU = u => Math.floor((((u % 1) + 1) % 1) * N) % N;
 function placeRival(r) {
   const f = (((r.u % 1) + 1) % 1) * N;
   const i0 = Math.floor(f) % N, i1 = (i0 + 1) % N, frac = f - Math.floor(f);
   const a = P(i0), b = P(i1), n = normals[i0];
-  let lat = RACE[i0];
-  // hold the grid-box offset through the start, then blend onto the line
-  if (sess.mode === 'race' && r.gridLat != null && sess.raceElapsed < GRID_BLEND) {
-    const k = Math.max(0, sess.raceElapsed) / GRID_BLEND;
-    lat = r.gridLat * (1 - k) + RACE[i0] * k;
-  }
+  const lat = r.lat != null ? r.lat : RACE[i0];
   const cx = a[0] + (b[0] - a[0]) * frac + n[0] * lat;
   const cz = a[2] + (b[2] - a[2]) * frac + n[1] * lat;
   r.mesh.position.set(cx, trackInfo(cx, cz, i0).y, cz);
-  r.mesh.rotation.y = Math.atan2(b[0] - a[0], b[2] - a[2]);
+  // heading = track tangent, nudged by lateral movement so darts read naturally
+  r.mesh.rotation.y = Math.atan2(b[0] - a[0], b[2] - a[2]) + (r.latV || 0) * 0.03;
+}
+
+// ---------------------------------------------------------------------------
+// Rival AI: dynamic speed (launch from standstill, brake for corners via the
+// V_ALLOW profile) + lateral racecraft (pass / leave room / defend) + 2-way
+// collision. Rivals stay parametrised by (u = laps, lat = m off centre) so they
+// can never spin off, but they genuinely race within that.
+// ---------------------------------------------------------------------------
+function updateRivals(dt) {
+  const racing = sess.mode === 'race';
+  const pinfo = trackInfo(state.x, state.z, state.idx);
+  const pu = playerDist() / TRACK_LEN, pLat = pinfo.lateral, pv = Math.hypot(state.vx, state.vz);
+
+  // longitudinal: target V_ALLOW*skill, launch from 0, brake hard for corners
+  for (const r of rivals) {
+    const i = idxAtU(r.u);
+    r.errT -= dt;
+    if (r.errT <= 0) { r.errT = 5 + Math.random() * 7; r.errUntil = Math.random() < 0.22 ? 0.4 + Math.random() * 0.9 : 0; }
+    if (r.errUntil > 0) r.errUntil -= dt;
+    let vt = V_ALLOW[i] * r.skill * (r.errUntil > 0 ? 0.8 : 1);
+    if (racing && sess.raceElapsed < r.react) vt = 0;      // reaction delay at lights-out
+    const aMax = 12 * Math.max(0.16, 1 - r.v / 95);        // engine accel, tapers with speed
+    if (r.v < vt) r.v = Math.min(vt, r.v + aMax * dt);
+    else r.v = Math.max(vt, r.v - 32 * dt);                // hard braking
+    if (r.v < 0) r.v = 0;
+  }
+
+  // lateral racecraft: pull out to pass a slower car, leave room when alongside
+  const cars = rivals.map(r => ({ r, u: r.u, lat: r.lat, v: r.v }));
+  cars.push({ r: null, u: pu, lat: pLat, v: pv });
+  // at the start, hold grid formation and converge to the line over the run to T1
+  const startMerge = racing ? Math.min(1, Math.max(0, sess.raceElapsed) / 6) : 1;
+  for (const r of rivals) {
+    const i = idxAtU(r.u);
+    let target = RACE[i];
+    if (racing && startMerge < 1 && r.gridLat != null) target = r.gridLat * (1 - startMerge) + RACE[i] * startMerge;
+    const tight = Math.max(0.28, 1 - Math.abs(CURV[i]) * 22);   // hug the line in tight corners
+    if (racing && startMerge > 0.35) {                          // racecraft only once away from the grid
+      for (const o of cars) {
+        if (o.r === r) continue;
+        const ds = (o.u - r.u) * TRACK_LEN;
+        if (ds < -5 || ds > 16) continue;
+        const dlat = o.lat - r.lat;
+        if (ds > 2.5 && Math.abs(dlat) < 3.2 && o.v < r.v - 1) target += (r.lat >= o.lat ? 1 : -1) * (2.6 + r.aggr * 1.5) * tight;
+        else if (Math.abs(ds) <= 4 && Math.abs(dlat) < 3.0) target += (dlat > 0 ? -1 : 1) * 2.2 * tight;
+      }
+    }
+    target = Math.max(-(HWm[i] - 1.0), Math.min(HWp[i] - 1.0, target));
+    const nl = r.lat + Math.max(-6 * dt, Math.min(6 * dt, target - r.lat));
+    r.latV = (nl - r.lat) / Math.max(dt, 1e-3); r.lat = nl;
+  }
+
+  for (const r of rivals) r.u += (r.v * dt) / TRACK_LEN;   // advance by speed
+
+  // rival<->rival collision in (u,lat) space — momentum both ways
+  const LEN = 4.6, WID = 1.9;
+  for (let a = 0; a < rivals.length; a++) for (let b = a + 1; b < rivals.length; b++) {
+    const r = rivals[a], o = rivals[b];
+    const ds = (o.u - r.u) * TRACK_LEN, dlat = o.lat - r.lat;
+    if (Math.abs(ds) < LEN && Math.abs(dlat) < WID) {
+      const ovLat = WID - Math.abs(dlat), ovLon = LEN - Math.abs(ds);
+      if (ovLat <= ovLon) { const p = ovLat / 2 * (dlat >= 0 ? 1 : -1); o.lat += p; r.lat -= p; r.v *= 0.99; o.v *= 0.99; }
+      else { const p = (ovLon / 2) / TRACK_LEN; if (ds >= 0) { o.u += p; r.u -= p; r.v = Math.min(r.v, o.v); } else { r.u += p; o.u -= p; o.v = Math.min(o.v, r.v); } }
+    }
+  }
+
+  for (const r of rivals) placeRival(r);
+  // player<->rival, both ways: player shoved + scrubbed, rival knocked aside too
+  if (racing && sess.phase === 'racing') {
+    for (const r of rivals) {
+      const rp = r.mesh.position;
+      const dx = state.x - rp.x, dz = state.z - rp.z, d = Math.hypot(dx, dz);
+      if (d < COLL_R && d > 1e-4) {
+        const push = COLL_R - d, nx = dx / d, nz = dz / d;
+        state.x += nx * push * 0.55; state.z += nz * push * 0.55;
+        const vn = state.vx * nx + state.vz * nz;
+        if (vn < 0) { state.vx -= nx * vn * 1.3; state.vz -= nz * vn * 1.3; }
+        state.vx *= 0.95; state.vz *= 0.95;
+        const ni = normals[idxAtU(r.u)];
+        r.lat += -(nx * ni[0] + nz * ni[1]) * push * 0.55;
+        r.v *= 0.95;
+        placeRival(r);
+      }
+    }
+  }
 }
 // world pose at a given progress (m) and lateral offset (m, + = left)
 function poseAtGrid(prog, lat) {
@@ -1879,7 +1992,7 @@ function startRace(playerGrid) {
       state.r = 0; state.thr = 0; state.brk = 0; state.ax = 0; state.axSm = 0;
       clearPlayerLaps(); state.prog = gp;
     } else {
-      ent.u = gp / TRACK_LEN - 1; ent.gridLat = lat; placeRival(ent);
+      ent.u = gp / TRACK_LEN - 1; ent.gridLat = lat; ent.lat = lat; ent.v = 0; placeRival(ent);
     }
   });
   flashLap(`RACE — ${menu.laps} laps — lights out and away we go`);
@@ -1949,14 +2062,18 @@ function updateSession(dt) {
       sess.lightT += dt;
       sess.lights = Math.min(5, Math.floor(sess.lightT)); // one red light per second
       updateStartLights(sess.lights, false);
+      const sl = $id('startlights'); sl.classList.add('show'); sl.classList.remove('go');
+      [...sl.children].forEach((c, k) => c.classList.toggle('on', k < sess.lights));
       if (sess.lightT >= 5 + sess.hold) {          // all five held, then out
         sess.phase = 'racing'; sess.raceElapsed = 0;
         updateStartLights(0, true); startLights.visible = false;
+        [...sl.children].forEach(c => c.classList.remove('on'));
+        sl.classList.add('go'); setTimeout(() => sl.classList.remove('show', 'go'), 1000);  // flash green, then clear
         flashLap('GO GO GO!');
       }
     } else if (sess.running) {
       sess.raceElapsed += dt;
-      for (const r of rivals) { r.u += dt / r.def.lap; placeRival(r); }
+      updateRivals(dt);
       if (playerDist() >= sess.laps * TRACK_LEN) { endRace(); sess.running = false; gridBoxes.visible = false; }
     }
     updateModeBar(); updateTower();
@@ -1994,7 +2111,7 @@ function startGame(mode) {
   } else if (mode === 'quali') {
     sess.mode = 'quali'; sess.running = true; sess.timeLeft = menu.qmin * 60;
     rivalsGroup.visible = true; showTower(true);
-    rivals.forEach((r, i) => { r.u = Math.random(); placeRival(r); });
+    rivals.forEach((r) => { r.u = Math.random(); r.lat = RACE[idxAtU(r.u)]; r.v = V_ALLOW[idxAtU(r.u)] * r.skill * 0.85; placeRival(r); });
     state.idx = 0; resetCar(); clearPlayerLaps();
     flashLap(`QUALIFYING — ${menu.qmin}:00 — set your fastest lap`);
   } else {
@@ -2009,6 +2126,7 @@ function backToMenu() {
   $id('title').style.display = 'flex';
   state.idx = 0; resetCar(); clearPlayerLaps();
   $id('modebar').textContent = '';
+  $id('startlights').classList.remove('show', 'go');
 }
 {
   const modes = document.querySelectorAll('.modes .mode');
@@ -2121,8 +2239,9 @@ function frame() {
   car.userData.leds.forEach((led, k) => { led.visible = k < lit; });
 
   // kerb rumble: shake the camera when riding the painted kerbs
-  const onKerb = Math.abs(info.lateral) > HALF_W - 0.25 &&
-                 Math.abs(info.lateral) < HALF_W + KERB_W + 0.3 &&
+  const hwK = info.lateral > 0 ? HWp[info.idx] : HWm[info.idx];
+  const onKerb = Math.abs(info.lateral) > hwK - 0.25 &&
+                 Math.abs(info.lateral) < hwK + KERB_W + 0.3 &&
                  Math.abs(C(info.idx)) > 0.003;
   if (onKerb && speed > 8) {
     camPos.y += (Math.random() - 0.5) * 0.025;
@@ -2164,7 +2283,8 @@ frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, V_ALLOW, RACE, TRACK_LEN, idxAtU,
+  pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
