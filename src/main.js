@@ -335,6 +335,35 @@ raceLine.material.opacity = 0.85;
 scene.add(raceLine);
 raceLine.visible = false;   // off by default — the broadcast has no green line (toggle: L)
 
+// Skidmarks: rubbered-in racing line that DARKENS the tarmac (near-black,
+// per-vertex alpha), widest + heaviest through braking zones and corners
+{
+  const pos = [], col = [], idx = []; let vi = 0;
+  for (let i = 0; i <= N; i++) {
+    const ii = i % N, p = P(ii), n = normals[ii], lat = RACE[ii];
+    const brake = Math.min(1, Math.max(0, V_ALLOW[ii] - V_ALLOW[(ii + 3) % N]) * 0.5);
+    const corner = Math.min(1, Math.abs(CURV[ii]) * 30);
+    const heat = Math.min(1, 0.25 + brake * 0.7 + corner * 0.6);
+    const w = 0.85 + heat * 0.95;               // wider band where the rubber builds up
+    const a = 0.16 + heat * 0.4;                // more opaque (darker) with more heat
+    pos.push(p[0] + n[0] * (lat - w), p[1] + 0.04, p[2] + n[1] * (lat - w));
+    pos.push(p[0] + n[0] * (lat + w), p[1] + 0.04, p[2] + n[1] * (lat + w));
+    col.push(0, 0, 0, a, 0, 0, 0, a);           // black with per-vertex alpha (RGBA)
+    if (i < N) idx.push(vi, vi + 2, vi + 1, vi + 1, vi + 2, vi + 3);
+    vi += 2;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));   // 4-component = per-vertex alpha
+  geo.setIndex(idx);
+  const skid = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0x000000, vertexColors: true, transparent: true, depthWrite: false, toneMapped: false,
+    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+  }));
+  skid.renderOrder = 1;
+  scene.add(skid);
+}
+
 // (white edge lines removed — track reads as uniform tarmac to the kerbs)
 
 // kerbs on corners (red/white stripes), placed where curvature is significant
