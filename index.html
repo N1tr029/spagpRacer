@@ -86,8 +86,20 @@
   #tcMenu { left: 50%; transform: translateX(-50%); }
   #tcReset { left: 50%; transform: translateX(calc(-50% - 84px)); }
   #tcFull { left: 50%; transform: translateX(calc(-50% + 84px)); font-size: 18px; }
-  body.touch #help, body.touch #mfd, body.touch #tirebox { display: none; }   /* declutter the phone HUD */
+  #tcCam { left: 16px; bottom: 130px; }
+  body.touch #help, body.touch #mfd, body.touch #tirebox, body.touch #tower { display: none; }   /* declutter the phone HUD */
   body.touch #speedo { bottom: 220px; right: 20px; }                          /* lift the readout above the pedals */
+  /* scale the desktop-sized HUD down for small phone screens */
+  body.touch #speed { font-size: 38px; } body.touch #gear { font-size: 19px; } body.touch #rpmbar { width: 140px; } body.touch #rpm { font-size: 11px; }
+  body.touch #timing .lap-current { font-size: 21px; } body.touch #timing #delta { font-size: 15px; } body.touch #timing .row { font-size: 11.5px; }
+  body.touch #sectors .s { font-size: 11px; padding: 2px 1px 3px; }
+  body.touch #modebar { font-size: 11px; padding: 4px 11px; top: 8px; }
+  body.touch #startlights { gap: 8px; top: 4px; } body.touch #startlights span { width: 28px; height: 28px; }
+  body.touch #cornerName { font-size: 14px; letter-spacing: 1.5px; padding: 4px 12px; bottom: 96px; border-left-width: 4px; }
+  body.touch #lapflash { font-size: 14px; top: 74px; }
+  body.touch #minimap { width: 116px; height: 116px; top: 12px; right: 12px; }
+  body.touch #drs { font-size: 16px; bottom: 120px; padding: 3px 12px; }
+  body.touch #ersmode { font-size: 10px; } body.touch #erspct { font-size: 11px; } body.touch #ersbar { width: 120px; }
   #rotate { position: fixed; inset: 0; z-index: 30; display: none; background: #0a0d12; color: #fff;
     align-items: center; justify-content: center; text-align: center; font-size: 19px; font-weight: 700;
     letter-spacing: 1px; line-height: 1.6; padding: 30px; }
@@ -341,6 +353,7 @@
   <div id="touchctl">
     <div class="tc steer" id="tcLeft">‹</div>
     <div class="tc steer" id="tcRight">›</div>
+    <div class="tc mini" id="tcCam">CAM</div>
     <div class="tc mini" id="tcErs">ERS</div>
     <div class="tc mini" id="tcDrs">DRS</div>
     <div class="tc brake" id="tcBrake">BRAKE</div>
