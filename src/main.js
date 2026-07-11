@@ -2050,8 +2050,8 @@ const RIVALS_DEF = [
 ];
 function makeRivalCar(color) {
   const grp = new THREE.Group();
-  const body = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.1 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x0b0b0d, roughness: 0.6 });
+  const body = new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.1, envMapIntensity: 0.55 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x0b0b0d, roughness: 0.7, envMapIntensity: 0.4 });
   const tyre = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.85 });
   const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; grp.add(m); return m; };
   add(new THREE.BoxGeometry(0.86, 0.40, 3.8), body, 0, 0.50, 0);      // tub
