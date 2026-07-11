@@ -32,12 +32,17 @@ const C = i => CURV[((i % N) + N) % N];
 
 // allowed-speed profile for brake assist: corner speed cap + backward pass
 // so the assist knows braking points, not just apex speeds
+// calibrated to F1 25's braking-zone speeds (read off the reference lap): a
+// downforce-aware grip model (base ~2.5 lateral g + speed downforce) instead of
+// a flat ~1.2 g, so corners carry realistic speed and braking starts late.
 const V_ALLOW = new Float32Array(N);
+const VA_MU = 2.5, VA_DFK = 0.00035, VA_CAP = 94;
+const vAllowAt = R => { const den = 1 - VA_MU * R * VA_DFK; return den > 0.06 ? Math.min(VA_CAP, Math.sqrt(VA_MU * R * 9.81 / den)) : VA_CAP; };
 {
-  for (let i = 0; i < N; i++) V_ALLOW[i] = Math.min(88, Math.sqrt(11.5 / Math.max(Math.abs(CURV[i]), 1e-5)));
+  for (let i = 0; i < N; i++) V_ALLOW[i] = vAllowAt(Math.abs(CURV[i]) > 1e-5 ? 1 / Math.abs(CURV[i]) : 9999);
   for (let pass = 0; pass < 3; pass++)
     for (let i = N - 1; i >= 0; i--)
-      V_ALLOW[i] = Math.min(V_ALLOW[i], Math.sqrt(V_ALLOW[(i + 1) % N] ** 2 + 2 * 30 * STEP));
+      V_ALLOW[i] = Math.min(V_ALLOW[i], Math.sqrt(V_ALLOW[(i + 1) % N] ** 2 + 2 * 42 * STEP));   // ~4.3 g braking
 }
 
 // variable track half-width: broaden the OUTSIDE of tight corners (like the real
@@ -65,12 +70,12 @@ for (let i = 0; i < N; i++) {
   const extra = Math.max(HWp[i], HWm[i]) - HALF_W;
   if (extra > 0.3) {
     const R = Math.abs(CURV[i]) > 1e-5 ? 1 / Math.abs(CURV[i]) : 9999;
-    V_ALLOW[i] = Math.min(88, Math.sqrt(11.5 * (R + extra * 1.2)));
+    V_ALLOW[i] = vAllowAt(R + extra * 1.2);
   }
 }
 for (let pass = 0; pass < 3; pass++)
   for (let i = N - 1; i >= 0; i--)
-    V_ALLOW[i] = Math.min(V_ALLOW[i], Math.sqrt(V_ALLOW[(i + 1) % N] ** 2 + 2 * 30 * STEP));
+    V_ALLOW[i] = Math.min(V_ALLOW[i], Math.sqrt(V_ALLOW[(i + 1) % N] ** 2 + 2 * 42 * STEP));
 
 // Tangents and left-normals (xz plane), smoothed
 const tangents = [], normals = [];
@@ -1813,7 +1818,7 @@ function updateRivals(dt) {
     if (racing && sess.raceElapsed < r.react) vt = 0;      // reaction delay at lights-out
     const aMax = 12 * Math.max(0.16, 1 - r.v / 95);        // engine accel, tapers with speed
     if (r.v < vt) r.v = Math.min(vt, r.v + aMax * dt);
-    else r.v = Math.max(vt, r.v - 32 * dt);                // hard braking
+    else r.v = Math.max(vt, r.v - 42 * dt);                // hard braking (~4.3 g)
     if (r.v < 0) r.v = 0;
   }
 
