@@ -884,6 +884,9 @@ addEventListener('keydown', e => {
     case 'KeyO':
       toggleSettings();
       break;
+    case 'KeyQ':
+      setQuali(!quali.on);
+      break;
     case 'KeyL': raceLine.visible = !raceLine.visible; break;
     case 'KeyH': car.userData.halo.visible = !car.userData.halo.visible; break;
     case 'KeyX':
@@ -1282,6 +1285,109 @@ addEventListener('drop', e => {
 });
 
 // ---------------------------------------------------------------------------
+// Rivals & Qualifying mode (key Q) — a field of cars circulating the racing
+// line at fixed target paces, plus a session clock and live timing tower.
+// Rivals are visual pace-setters (no collision), like on-track ghosts.
+// ---------------------------------------------------------------------------
+const RIVALS_DEF = [
+  { name: 'VER', color: 0x1f3a93, lap: 135.4 },
+  { name: 'LEC', color: 0xd42020, lap: 136.6 },
+  { name: 'RUS', color: 0x00a19c, lap: 137.5 },
+  { name: 'PIA', color: 0xff8000, lap: 138.2 },
+  { name: 'SAI', color: 0xd42020, lap: 139.0 },
+  { name: 'ALO', color: 0x0a7d68, lap: 139.9 },
+  { name: 'HAM', color: 0x00a19c, lap: 140.8 },
+  { name: 'GAS', color: 0x2f6fb0, lap: 142.0 },
+];
+function makeRivalCar(color) {
+  const grp = new THREE.Group();
+  const body = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.1 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x0b0b0d, roughness: 0.6 });
+  const tyre = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.85 });
+  const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; grp.add(m); return m; };
+  add(new THREE.BoxGeometry(0.86, 0.40, 3.8), body, 0, 0.50, 0);      // tub
+  add(new THREE.BoxGeometry(0.42, 0.26, 1.6), body, 0, 0.44, 2.4);    // nose
+  add(new THREE.BoxGeometry(1.90, 0.07, 0.5), dark, 0, 0.26, 3.15);   // front wing
+  add(new THREE.BoxGeometry(0.50, 0.42, 0.8), body, 0, 0.82, -0.5);   // airbox
+  add(new THREE.BoxGeometry(1.40, 0.46, 0.1), body, 0, 1.02, -2.0);   // rear wing
+  add(new THREE.BoxGeometry(0.08, 0.40, 0.4), dark, 0.47, 0.80, -2.0);
+  add(new THREE.BoxGeometry(0.08, 0.40, 0.4), dark, -0.47, 0.80, -2.0);
+  const wg = new THREE.CylinderGeometry(0.34, 0.34, 0.36, 14);
+  for (const [x, z] of [[0.72, 1.75], [-0.72, 1.75], [0.80, -1.7], [-0.80, -1.7]]) {
+    const w = add(wg, tyre, x, 0.34, z); w.rotation.z = Math.PI / 2;
+  }
+  return grp;
+}
+const rivalsGroup = new THREE.Group();
+rivalsGroup.visible = false;
+scene.add(rivalsGroup);
+const rivals = RIVALS_DEF.map((def, i) => {
+  const mesh = makeRivalCar(def.color);
+  rivalsGroup.add(mesh);
+  return { def, mesh, prog: i / RIVALS_DEF.length, lap: def.lap };
+});
+function placeRival(r) {
+  const f = (((r.prog % 1) + 1) % 1) * N;
+  const i0 = Math.floor(f) % N, i1 = (i0 + 1) % N, frac = f - Math.floor(f);
+  const a = P(i0), b = P(i1), n = normals[i0], lat = RACE[i0];
+  const cx = a[0] + (b[0] - a[0]) * frac + n[0] * lat;
+  const cz = a[2] + (b[2] - a[2]) * frac + n[1] * lat;
+  r.mesh.position.set(cx, trackInfo(cx, cz, i0).y, cz);
+  r.mesh.rotation.y = Math.atan2(b[0] - a[0], b[2] - a[2]);
+}
+rivals.forEach(placeRival);
+
+const fmtShort = ms => !isFinite(ms) ? '—'
+  : `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${Math.floor((ms % 1000) / 100)}`;
+const QUALI_SECS = 8 * 60;
+const quali = { on: false, running: false, timeLeft: QUALI_SECS };
+function setQuali(on) {
+  quali.on = on; quali.running = on; quali.timeLeft = QUALI_SECS;
+  rivalsGroup.visible = on;
+  document.getElementById('tower').classList.toggle('show', on);
+  if (on) {
+    for (const r of rivals) r.lap = r.def.lap * (0.997 + Math.random() * 0.006);
+    state.idx = 0; resetCar();
+    state.best = null; state.last = null; state.bestT = null; state.lap = 0;
+    state.running = false; state.curT.fill(-1);
+    flashLap('QUALIFYING — 8:00 on the clock — set your fastest lap');
+  } else flashLap('PRACTICE — free running');
+  updateModeBar();
+}
+function updateModeBar() {
+  const el = document.getElementById('modebar');
+  if (!quali.on) { el.textContent = 'PRACTICE'; return; }
+  const t = Math.max(0, quali.timeLeft);
+  el.innerHTML = `<span class="q">QUALIFYING</span><span class="clock">${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}</span>`;
+}
+function updateTower() {
+  const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, ms: r.lap * 1000, you: false }));
+  rows.push({ name: 'YOU', color: 0xffffff, ms: state.best || Infinity, you: true });
+  rows.sort((a, b) => a.ms - b.ms);
+  document.getElementById('tower').innerHTML = '<div class="th">QUALIFYING</div>' + rows.map((r, i) =>
+    `<div class="r${r.you ? ' you' : ''}"><span class="pos">${i + 1}</span>`
+    + `<span class="dot" style="background:#${r.color.toString(16).padStart(6, '0')}"></span>`
+    + `<span class="nm">${r.name}</span><span class="tm">${fmtShort(r.ms)}</span></div>`).join('');
+}
+function updateQuali(dt) {
+  if (!quali.on) return;
+  if (quali.running) {
+    quali.timeLeft -= dt;
+    for (const r of rivals) { r.prog += dt / r.lap; placeRival(r); }
+    if (quali.timeLeft <= 0) {
+      quali.timeLeft = 0; quali.running = false;
+      const rows = rivals.map(r => ({ n: r.def.name, ms: r.lap * 1000 }));
+      rows.push({ n: 'YOU', ms: state.best || Infinity });
+      rows.sort((a, b) => a.ms - b.ms);
+      const p = rows.findIndex(x => x.n === 'YOU') + 1;
+      flashLap(state.best ? `SESSION OVER — you qualified P${p}  (${fmt(state.best)})` : 'SESSION OVER — no lap set');
+    }
+  }
+  updateModeBar();
+  updateTower();
+}
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 const camPos = new THREE.Vector3();
@@ -1400,6 +1506,7 @@ function frame() {
   }
 
   updateAudio(rpmFrac, input.throttle, speed);
+  updateQuali(dt);
   drawMinimap();
 
   renderer.render(scene, camera);

@@ -27,11 +27,22 @@ Press any key to start your engine.
 | C | Camera: chase → cockpit → nose |
 | L | Racing line on/off |
 | X | Assists (auto-brake + traction) on/off |
+| Q | Qualifying mode on/off |
+| O | Cockpit setup panel |
 | R | Reset to track |
 | M | Mute |
 
 Lap timing starts at the finish line. LAST/BEST and a live delta to your
 best lap show top-left; corner names flash as you reach them.
+
+## Modes
+
+- **Practice** (default) — free running; set and beat your own best lap.
+- **Qualifying** (press **Q**) — an 8-minute session against a field of
+  eight rival cars circulating the racing line at fixed target paces. A live
+  timing tower ranks the field; your best lap sets your grid slot, and when
+  the clock hits zero you're classified P1–P9. Rivals are visual
+  pace-setters (no contact).
 
 ## Track accuracy
 
