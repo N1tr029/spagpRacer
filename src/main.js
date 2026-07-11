@@ -1145,6 +1145,25 @@ function attachCarModel(model) {
   if (spinners.length === 4) {
     car.userData.wheels = spinners;
     car.userData.hubs = hubs;
+    // auto-level: source models are often exported slightly rolled/pitched;
+    // measure the tilt from the four wheel centers and cancel it so all
+    // contact patches land on one plane at y = 0
+    const [fl, fr, rl, rr] = hubs.map(h => h.position);
+    const roll = Math.atan2(((fr.y + rr.y) - (fl.y + rl.y)) / 2, ((fr.x + rr.x) - (fl.x + rl.x)) / 2);
+    const pitch = Math.atan2(((fl.y + fr.y) - (rl.y + rr.y)) / 2, ((fl.z + fr.z) - (rl.z + rr.z)) / 2);
+    const fix = new THREE.Euler(pitch, 0, -roll);
+    const level = new THREE.Group();
+    level.rotation.copy(fix);
+    car.add(level);
+    level.add(outer); // body inherits the correction (add keeps local pose)
+    for (const hub of hubs) {
+      hub.position.applyEuler(fix);
+      hub.rotation.set(pitch, hub.rotation.y, -roll); // wheels stand upright too
+    }
+    // ride height: put the mean contact patch exactly at the car origin
+    const contactY = hubs.reduce((a, h, i) => a + h.position.y - spinners[i].userData.radius, 0) / 4;
+    level.position.y -= contactY;
+    for (const hub of hubs) hub.position.y -= contactY;
   }
   flashLap('CUSTOM CAR LOADED' + (spinners.length === 4 ? ' — wheels linked' : '') + ' — B rotates 90°');
 }
@@ -1285,6 +1304,9 @@ function frame() {
   const info = trackInfo(state.x, state.z, state.idx);
   const speed = Math.hypot(state.vx, state.vz);
   car.position.set(state.x, info.y, state.z);
+  // YXZ: yaw first, so pitch tilts about the car's own lateral axis —
+  // with the default XYZ order, slope pitch leaks into roll when yawed
+  car.rotation.order = 'YXZ';
   car.rotation.y = state.heading;
   // pitch/roll from track gradient, low-passed so data noise never shakes the body
   const ahead = trackInfo(state.x + Math.sin(state.heading) * 6, state.z + Math.cos(state.heading) * 6, state.idx);
