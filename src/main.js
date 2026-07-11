@@ -18,12 +18,23 @@ const ASSET = import.meta.env.BASE_URL;
 // touch device? drives the on-screen controls + a lighter render for phones
 const IS_TOUCH = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
 
-// graphics quality (Low avoids the heavy passes so phones don't crash):
-//   low    = direct render, no post/env/shadows/mirror, 1x pixels
+// graphics quality (lower tiers drop the heavy passes so phones don't crash):
+//   min    = "potato": sub-native resolution, 30fps cap, sparse forest, no post
+//   low    = direct render, no post/env/shadows/mirror, native 1x pixels
 //   medium = bloom + colour grade + env + shadows (no SMAA, no mirror)
 //   high   = everything (+ SMAA anti-aliasing + rear-view mirror)
-const QUALITY = localStorage.getItem('ardennes.quality') || (IS_TOUCH ? 'low' : 'high');
-const USE_POST = QUALITY !== 'low', USE_SMAA = QUALITY === 'high', USE_REAR = QUALITY === 'high', USE_SHADOW = QUALITY !== 'low';
+// pr = max device-pixel-ratio, trees = forest-density multiplier, fps = render
+// cap (0 = uncapped), fog = far-plane draw distance.
+const QCFG = {
+  min:    { pr: 0.7, post: false, smaa: false, rear: false, shadow: false, trees: 0.22, fps: 30, fog: 2200 },
+  low:    { pr: 1.0, post: false, smaa: false, rear: false, shadow: false, trees: 1.0,  fps: 0,  fog: 4200 },
+  medium: { pr: 1.5, post: true,  smaa: false, rear: false, shadow: true,  trees: 1.0,  fps: 0,  fog: 4200 },
+  high:   { pr: IS_TOUCH ? 1.6 : 2, post: true, smaa: true, rear: true, shadow: true, trees: 1.0, fps: 0, fog: 4200 },
+};
+let QUALITY = localStorage.getItem('ardennes.quality') || (IS_TOUCH ? 'low' : 'high');
+if (!QCFG[QUALITY]) QUALITY = IS_TOUCH ? 'low' : 'high';
+const QC = QCFG[QUALITY];
+const USE_POST = QC.post, USE_SMAA = QC.smaa, USE_REAR = QC.rear, USE_SHADOW = QC.shadow;
 
 // real OSM forest extent around Spa (landuse=forest), rasterised to a grid in
 // game coordinates — trees only grow where there's actually forest, so La Source
@@ -160,9 +171,15 @@ function pitInfo(x, z, hintK) {
 // ---------------------------------------------------------------------------
 // Renderer / scene
 // ---------------------------------------------------------------------------
-const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, QUALITY === 'low' ? 1 : QUALITY === 'medium' ? 1.5 : (IS_TOUCH ? 1.6 : 2)));
-renderer.setSize(innerWidth, innerHeight);
+// visible-viewport size: on mobile, visualViewport excludes the browser's
+// address/tab bar, so the canvas fills exactly what's on screen (no bar overlap,
+// no letterbox) and follows the bar as it shows/hides.
+const vpW = () => Math.round(window.visualViewport ? visualViewport.width : innerWidth);
+const vpH = () => Math.round(window.visualViewport ? visualViewport.height : innerHeight);
+
+const renderer = new THREE.WebGLRenderer({ antialias: QUALITY !== 'min', preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, QC.pr));
+renderer.setSize(vpW(), vpH());
 renderer.shadowMap.enabled = USE_SHADOW;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;   // softer, less aliased contact shadows
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -175,9 +192,9 @@ const GEN = window.__gen; // stale render loops check this and stop
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x6ea6e6);           // richer Ardennes-summer blue
-scene.fog = new THREE.Fog(0x9dc0e6, 550, 4200);        // lighter haze, pushed back
+scene.fog = new THREE.Fog(0x9dc0e6, 550, QC.fog);      // lighter haze, pushed back (nearer on min)
 
-const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.3, 6000);
+const camera = new THREE.PerspectiveCamera(72, vpW() / vpH(), 0.3, 6000);
 
 const hemi = new THREE.HemisphereLight(0xd8e8ff, 0x42603a, 0.6);   // lower: the env map now adds ambient fill
 scene.add(hemi);
@@ -595,7 +612,7 @@ function terrainHeight(x, z) {
     g.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
     return g;
   };
-  const PER = 6000;
+  const PER = Math.round(6000 * QC.trees);   // per-billboard-mesh cap; min tier thins the forest right down
   const forest = [
     { m: new THREE.InstancedMesh(crossGeo(9, 15), new THREE.MeshLambertMaterial({ map: treeTex('pine'), alphaTest: 0.5, side: THREE.DoubleSide }), PER), n: 0 },
     { m: new THREE.InstancedMesh(crossGeo(11, 12), new THREE.MeshLambertMaterial({ map: treeTex('leaf'), alphaTest: 0.5, side: THREE.DoubleSide }), PER), n: 0 },
@@ -2708,19 +2725,32 @@ function backToMenu() {
   $id('startlights').classList.remove('show', 'go');
 }
 
-// fullscreen: hides the mobile browser chrome (address bar) in landscape.
-// Works on Android; on iOS use "Add to Home Screen" (web-app meta handles that).
+// fullscreen: hides the mobile browser chrome (address/search bar), exactly like
+// tapping fullscreen on a YouTube video. Android/desktop/iPad use the Fullscreen
+// API (+ orientation lock to landscape); iPhone Safari has no such API, so we
+// point the user at "Add to Home Screen" (the web-app meta gives that a chromeless
+// standalone window).
 const _fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
 const _canFS = () => document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
+function lockLandscape() { try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch (_) {} }
 function goFullscreen() {
   const el = document.documentElement, req = _canFS();
-  if (req && !_fsEl()) { try { const p = req.call(el); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
+  if (req && !_fsEl()) {
+    try { const p = req.call(el); if (p && p.then) p.then(lockLandscape, () => {}); else lockLandscape(); } catch (_) {}
+  }
 }
 function toggleFullscreen() {
-  if (!_canFS()) { flashLap('iPhone: tap Share, then "Add to Home Screen" and open it from the icon for fullscreen'); return; }
-  if (_fsEl()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  if (!_canFS()) { $id('iosfs')?.classList.add('show'); return; }   // iPhone Safari: show the add-to-home hint
+  if (_fsEl()) { try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch (_) {} try { screen.orientation?.unlock?.(); } catch (_) {} }
   else goFullscreen();
 }
+// keep every fullscreen button's icon in sync (enter ⛶ ⇄ exit ⤡)
+function syncFsIcons() {
+  const on = !!_fsEl();
+  document.querySelectorAll('.fsbtn').forEach(b => { b.innerHTML = on ? '&#10064;' : '&#9974;'; });
+}
+document.addEventListener('fullscreenchange', syncFsIcons);
+document.addEventListener('webkitfullscreenchange', syncFsIcons);
 // cycle the driving camera (chase → cockpit → nose); if a cinematic has taken
 // over, change the view we'll return to afterwards instead
 function cycleCam() {
@@ -2749,6 +2779,8 @@ function cycleCam() {
   document.querySelector('#optQuality button[data-v="' + QUALITY + '"]')?.classList.add('on');   // reflect current quality
   $id('startBtn').addEventListener('click', () => { if (IS_TOUCH) goFullscreen(); startGame(menu.mode); });   // phones go fullscreen on start
   $id('resultBtn').addEventListener('click', backToMenu);
+  $id('menuFull')?.addEventListener('click', toggleFullscreen);   // fullscreen from the title screen (before the address bar's in the way)
+  $id('iosfsClose')?.addEventListener('click', () => $id('iosfs')?.classList.remove('show'));
 }
 
 // on-screen touch controls for phones: steering, pedals, DRS/ERS, reset, menu
@@ -2786,6 +2818,11 @@ let prevCamMode = null;   // remembers your view while a cinematic camera takes 
 let camInit = false;
 let acc = 0, lastT = performance.now(), lcdAcc = 0, pitchSm = 0, slopeSm = 0;
 const FIXED = 1 / 120;
+// render-rate cap for the "min" tier: skip whole frames so a weak phone renders
+// ~30fps steady instead of straining for the display's refresh. Physics still
+// integrates real elapsed time via the accumulator, so handling is unaffected.
+const FRAME_MIN_MS = QC.fps ? 1000 / QC.fps - 1.5 : 0;
+let _fpsLast = 0;
 
 // HUD shift-light strip: 15 LEDs, lit by rpm, all flashing blue at the limiter
 const shiftEls = [];
@@ -2802,6 +2839,8 @@ function frame() {
   if (window.__gen !== GEN) return; // a newer module instance took over
   requestAnimationFrame(frame);
   const now = performance.now();
+  if (FRAME_MIN_MS && now - _fpsLast < FRAME_MIN_MS) return;   // min-tier render cap
+  _fpsLast = now;
   let dt = Math.min((now - lastT) / 1000, 0.1);
   lastT = now;
 
@@ -3002,9 +3041,15 @@ window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene
   placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, showPodium, podium, endRace, composer, renderRearView, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
+function onResize() {
+  const w = vpW(), h = vpH();
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-  if (composer) composer.setSize(innerWidth, innerHeight);
-});
+  renderer.setSize(w, h);
+  if (composer) composer.setSize(w, h);
+}
+addEventListener('resize', onResize);
+// the mobile address bar sliding in/out fires visualViewport resize (not window
+// resize), and rotation needs a beat for the new size to settle.
+addEventListener('orientationchange', () => setTimeout(onResize, 300));
+if (window.visualViewport) visualViewport.addEventListener('resize', onResize);

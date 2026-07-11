@@ -65,9 +65,55 @@
     opacity: .45; line-height: 1.6; padding: 0 20px; pointer-events: auto; }
   #credits a { color: #9cc4ff; text-decoration: none; }
   #credits a:hover { text-decoration: underline; }
+  .qhint { font-size: 10px; opacity: .4; letter-spacing: .3px; margin-top: 6px; text-align: center; }
+  /* phones: the credit line sits under the menu / START button, where its links
+     steal taps and jump to Sketchfab. Keep the attribution readable but make it
+     plain, non-interactive caption text that clears the home indicator. */
+  body.touch #credits { pointer-events: none; font-size: 9px; opacity: .4; line-height: 1.5;
+    padding: 0 14px; bottom: max(8px, env(safe-area-inset-bottom)); }
+  body.touch #credits a { color: inherit; text-decoration: none; }
+
+  /* YouTube-style fullscreen button on the title screen (touch only) */
+  #menuFull { position: absolute; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
+    width: 46px; height: 46px; display: none; align-items: center; justify-content: center; z-index: 12;
+    background: rgba(18,22,30,.55); border: 1px solid rgba(255,255,255,.22); border-radius: 11px;
+    color: #fff; font-size: 22px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  #menuFull:active { background: rgba(40,48,62,.8); }
+  body.touch #menuFull { display: flex; }
+
+  /* iPhone Safari can't do element fullscreen — a tidy add-to-home-screen sheet */
+  #iosfs { position: fixed; inset: 0; z-index: 40; display: none; align-items: center; justify-content: center;
+    background: rgba(4,6,10,.82); padding: 24px; }
+  #iosfs.show { display: flex; }
+  #iosfs .card { width: 340px; max-width: 90vw; background: #141922; border: 1px solid rgba(255,255,255,.14);
+    border-radius: 14px; padding: 22px 22px 18px; color: #fff; text-align: left; }
+  #iosfs .ic { font-size: 30px; text-align: center; opacity: .9; }
+  #iosfs h3 { margin: 4px 0 10px; text-align: center; font-size: 18px; letter-spacing: 1px; }
+  #iosfs p { margin: 0 0 12px; font-size: 13px; line-height: 1.5; opacity: .8; }
+  #iosfs ol { margin: 0 0 16px; padding-left: 20px; font-size: 13.5px; line-height: 1.9; }
+  #iosfs ol b { color: #ffd34d; }
+  #iosfs button { width: 100%; background: #1db954; color: #04140a; border: 0; border-radius: 9px;
+    padding: 11px 0; font-size: 14px; font-weight: 800; letter-spacing: 1px; cursor: pointer; }
+
+  /* short landscape screens (phones): tighten the title menu so the heading
+     isn't clipped and the credit line clears the START button */
+  @media (max-height: 460px) {
+    #title h1 { font-size: 30px; letter-spacing: 2px; }
+    #title .sub { margin: 4px 0 12px; font-size: 11.5px; }
+    #menu { width: 420px; }
+    .modes { margin-bottom: 10px; }
+    .modes .mode { padding: 9px 6px; }
+    .opts label { margin: 7px 0 4px; }
+    .seg button { padding: 7px 0; }
+    #startBtn { margin-top: 12px; padding: 11px 0; }
+    #title .go { margin-top: 7px; }
+    .qhint { margin-top: 4px; }
+    #credits { bottom: max(5px, env(safe-area-inset-bottom)); }
+  }
 
   /* --- mobile / touch controls (shown only on touch devices while driving) --- */
-  #touchctl { position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none; }
+  #touchctl { position: fixed; top: 0; left: env(safe-area-inset-left); right: env(safe-area-inset-right);
+    bottom: env(safe-area-inset-bottom); z-index: 8; pointer-events: none; display: none; }
   body.touch.driving #touchctl { display: block; }
   .tc { position: absolute; pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
     -webkit-tap-highlight-color: transparent; display: flex; align-items: center; justify-content: center;
@@ -242,6 +288,7 @@
   <div id="app"></div>
   <div id="cockpitVignette"></div>
   <div id="title">
+    <button id="menuFull" class="fsbtn" title="Fullscreen" aria-label="Fullscreen">&#9974;</button>
     <h1>ARDENNES <span>GP</span></h1>
     <p class="sub">Circuit de Spa-Francorchamps &middot; real layout &amp; LiDAR elevation</p>
     <div id="menu">
@@ -271,8 +318,9 @@
       <div class="opts" id="optQuality">
         <label>Graphics</label>
         <div class="seg" data-opt="quality">
-          <button data-v="low">Low</button><button data-v="medium">Medium</button><button data-v="high">High</button>
+          <button data-v="min">Min</button><button data-v="low">Low</button><button data-v="medium">Med</button><button data-v="high">High</button>
         </div>
+        <div class="qhint" id="qhint">Min = fastest, for older phones</div>
       </div>
       <button id="startBtn">START ENGINE &#9654;</button>
       <div class="go">or press Enter</div>
@@ -350,6 +398,17 @@
     <div class="hint">changes save automatically</div>
   </div>
   <div id="rotate"><div><div style="font-size:44px">&#8635;</div>Rotate your phone to landscape to race</div></div>
+  <div id="iosfs"><div class="card">
+    <div class="ic">&#9974;</div>
+    <h3>Fullscreen on iPhone</h3>
+    <p>Safari won&rsquo;t let a web page hide its bars. For a true, borderless game, add it to your Home Screen once:</p>
+    <ol>
+      <li>Tap the <b>Share</b> button in Safari</li>
+      <li>Choose <b>Add to Home Screen</b></li>
+      <li>Open <b>Ardennes GP</b> from the new icon</li>
+    </ol>
+    <button id="iosfsClose">Got it</button>
+  </div></div>
   <div id="touchctl">
     <div class="tc steer" id="tcLeft">‹</div>
     <div class="tc steer" id="tcRight">›</div>
@@ -360,7 +419,7 @@
     <div class="tc gas" id="tcGas">GAS</div>
     <div class="tc small" id="tcReset">RESET</div>
     <div class="tc small" id="tcMenu">MENU</div>
-    <div class="tc small" id="tcFull">&#9974;</div>
+    <div class="tc small fsbtn" id="tcFull">&#9974;</div>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>
