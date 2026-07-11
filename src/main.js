@@ -1559,6 +1559,7 @@ addEventListener('keydown', e => {
     case 'KeyD': case 'ArrowRight': input.right = true; break;
     case 'KeyR': resetCar(); break;
     case 'KeyC':
+      if (prevCamMode !== null) { prevCamMode = (prevCamMode + 1) % 3; break; }  // adjust the view to return to
       camMode = (camMode + 1) % 3; // chase -> cockpit -> nose pod
       document.body.classList.toggle('cockpit', camMode >= 1);
       break;
@@ -2714,6 +2715,7 @@ function backToMenu() {
 // Main loop
 // ---------------------------------------------------------------------------
 const camPos = new THREE.Vector3();
+let prevCamMode = null;   // remembers your view while a cinematic camera takes over
 let camInit = false;
 let acc = 0, lastT = performance.now(), lcdAcc = 0, pitchSm = 0, slopeSm = 0;
 const FIXED = 1 / 120;
@@ -2763,6 +2765,16 @@ function frame() {
   for (const w of car.userData.wheels) w.rotation.x += speed / (w.userData.radius || 0.44) * dt;
   for (const h of car.userData.hubs) if (h.userData.front) h.rotation.y = state.steer * 0.35;
   car.userData.steeringWheel.rotation.z = -state.steer * 1.6;
+
+  // cinematic cameras (pit stop, podium, race-start, broadcast) play in the
+  // chase view — if you're in cockpit or nose-pod, drop to the main camera for
+  // the duration (clearing the cockpit vignette) and restore your view after
+  const inCinematic = state.pitFrozen || podiumActive || tvMode || (sess.mode === 'race' && sess.phase === 'lights');
+  if (inCinematic && prevCamMode === null && camMode !== 0) {
+    prevCamMode = camMode; camMode = 0; document.body.classList.remove('cockpit');
+  } else if (!inCinematic && prevCamMode !== null) {
+    camMode = prevCamMode; prevCamMode = null; document.body.classList.toggle('cockpit', camMode >= 1);
+  }
 
   // camera
   const fwdX = Math.sin(state.heading), fwdZ = Math.cos(state.heading);
