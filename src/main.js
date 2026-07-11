@@ -203,6 +203,30 @@ const gradePass = new ShaderPass({
 });
 composer.addPass(gradePass);
 
+// Soft cloud billboards for sky depth (sprites always face the camera)
+{
+  const cc = document.createElement('canvas'); cc.width = 256; cc.height = 128;
+  const x2 = cc.getContext('2d');
+  for (const [bx, by, r] of [[128, 78, 56], [82, 84, 40], [174, 84, 40], [110, 62, 34], [150, 64, 34], [128, 90, 48]]) {
+    const grd = x2.createRadialGradient(bx, by, 4, bx, by, r);
+    // off-white and dim so the bloom pass reads them as soft cloud, not glare
+    grd.addColorStop(0, 'rgba(236,242,250,0.62)'); grd.addColorStop(0.55, 'rgba(236,242,250,0.26)'); grd.addColorStop(1, 'rgba(236,242,250,0)');
+    x2.fillStyle = grd; x2.beginPath(); x2.arc(bx, by, r, 0, 7); x2.fill();
+  }
+  const cloudTex = new THREE.CanvasTexture(cc);
+  let mnX = 1e9, mxX = -1e9, mnZ = 1e9, mxZ = -1e9;
+  for (const p of PTS) { mnX = Math.min(mnX, p[0]); mxX = Math.max(mxX, p[0]); mnZ = Math.min(mnZ, p[2]); mxZ = Math.max(mxZ, p[2]); }
+  const cxc = (mnX + mxX) / 2, czc = (mnZ + mxZ) / 2, spanX = mxX - mnX + 3000, spanZ = mxZ - mnZ + 3000;
+  let cs = 987654; const crand = () => (cs = (cs * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < 16; i++) {
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex, transparent: true, opacity: 0.7, depthWrite: false, fog: false }));
+    const sc = 340 + crand() * 420;
+    spr.scale.set(sc * 2.2, sc, 1);
+    spr.position.set(cxc + (crand() - 0.5) * spanX, 520 + crand() * 320, czc + (crand() - 0.5) * spanZ);
+    scene.add(spr);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Track surface mesh
 // ---------------------------------------------------------------------------
@@ -428,7 +452,7 @@ function terrainHeight(x, z) {
   const terrMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
   surfaceTex('/textures/grass.png', t => {
     t.repeat.set(320, 320);
-    terrMat.map = t; terrMat.vertexColors = false; terrMat.color.set(0xb9c4ae); terrMat.needsUpdate = true;
+    terrMat.map = t; terrMat.vertexColors = false; terrMat.color.set(0x83a257); terrMat.needsUpdate = true;   // richer Ardennes green
   });
   const terr = new THREE.Mesh(g, terrMat);
   terr.position.set(cx, 0, cz);
