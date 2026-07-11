@@ -920,6 +920,7 @@ const car = new THREE.Group();
   const drs = new THREE.Mesh(new THREE.BoxGeometry(1.46, 0.05, 0.24), accent);
   drs.rotation.x = -0.5;
   drs.position.set(0, 1.14, -2.16); car.add(drs);
+  car.userData.drsFlap = drs;   // laid flat when DRS opens
   for (const s of [-1, 1]) {
     const plate = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.42, 0.55), dark);
     plate.position.set(s * 0.74, 1.0, -2.05); car.add(plate);
@@ -979,7 +980,7 @@ scene.add(car);
 // ---------------------------------------------------------------------------
 // Physics
 // ---------------------------------------------------------------------------
-const input = { throttle: 0, brake: 0, steer: 0, left: false, right: false, up: false, down: false };
+const input = { throttle: 0, brake: 0, steer: 0, left: false, right: false, up: false, down: false, overtake: false, drsWant: false };
 const state = {
   x: P(0)[0] - tangents[0][0] * 12, z: P(0)[2] - tangents[0][1] * 12,
   heading: Math.atan2(tangents[0][0], tangents[0][1]), // yaw, forward = (sin,cos)
@@ -995,6 +996,8 @@ const state = {
   pitService: 0, pitServiced: false, pitFrozen: false,
   // live sector timing (0/1/2), personal-best per sector, colour code p/g/y
   sec: 0, secStart: 0, secLap: [null, null, null], secBest: [null, null, null], secCol: ['', '', ''],
+  // ERS (battery 0..1) + deploy state, DRS availability/open state
+  ers: 0.7, ersMode: 1, ersDeploy: false, ersOT: false, drsAvail: false, drsOpen: false, drsAnn: false,
 };
 
 const MASS = 800, POWER = 690000, MU = 1.75, DFK = 0.0062, CDA = 1.45;
@@ -1015,6 +1018,16 @@ const PIT_STOP_TIME = 2.6;   // seconds stationary in the box for a tyre change
 // three timing sectors, split by fraction of the lap (~Spa's real split points)
 const SEC_BOUND = [TRACK_LEN * 0.32, TRACK_LEN * 0.68];
 const secOf = prog => prog < SEC_BOUND[0] ? 0 : prog < SEC_BOUND[1] ? 1 : 2;
+
+// ERS: harvest under braking / off-throttle, deploy on power (overtake = burst)
+const ERS_HARVEST_BRAKE = 0.15, ERS_HARVEST_COAST = 0.05;
+const ERS_DEPLOY_OT = 0.11, ERS_DEPLOY_BAL = 0.045;
+const ERS_BOOST_OT = 0.22, ERS_BOOST_BAL = 0.10;   // extra drive force when deploying
+// DRS: drag multiplier when open, and the two Spa activation zones (progress m).
+// A zone [a,b] with a>b wraps the start/finish line.
+const DRS_DRAG = 0.72;
+const DRS_ZONES = [[1150, 2150], [6650, 200]];   // Kemmel straight; pit straight
+const inDrsZone = prog => DRS_ZONES.some(z => z[0] <= z[1] ? (prog >= z[0] && prog <= z[1]) : (prog >= z[0] || prog <= z[1]));
 
 function trackInfo(x, z, hint) {
   let bi = hint, bd = 1e18;
@@ -1081,8 +1094,40 @@ function updatePitStop(dt) {
 
 // the slip-angle dynamics need a finer timestep than 120 Hz to stay stable
 // at low speed, so each fixed step is integrated in three substeps
+// ERS + DRS state machine, run once per physics step so the deploy/DRS flags
+// stay constant across the substeps that read them
+function updateCarSystems(dt) {
+  const s = state, speed = Math.hypot(s.vx, s.vz);
+  const braking = s.brk > 0.05, onThrottle = s.thr > 0.1;
+  // ERS harvest: mostly under braking (MGU-K regen), a trickle off-throttle
+  if (braking && speed > 8) s.ers = Math.min(1, s.ers + ERS_HARVEST_BRAKE * dt);
+  else if (!onThrottle && speed > 8) s.ers = Math.min(1, s.ers + ERS_HARVEST_COAST * dt);
+  // ERS deploy: overtake button = max burst, balanced mode = gentle auto-deploy
+  const wantOT = input.overtake;
+  const auto = s.ersMode === 1 && onThrottle && speed > 15;
+  const deploy = (wantOT || auto) && s.ers > 0.01 && onThrottle && speed > 8 && !s.pitLimiter;
+  if (deploy) s.ers = Math.max(0, s.ers - (wantOT ? ERS_DEPLOY_OT : ERS_DEPLOY_BAL) * dt);
+  s.ersDeploy = deploy; s.ersOT = deploy && wantOT;
+  // DRS: available in a zone; in a race only from lap 2 and within ~1s of a car ahead
+  const inZone = inDrsZone(s.prog);
+  let allowed = inZone;
+  if (sess.mode === 'race') {
+    if (s.lap < 1) allowed = false;
+    else {
+      if (!s.drsAnn) { s.drsAnn = true; flashLap('DRS ENABLED'); }
+      const pd = playerDist(), pv = Math.max(speed, 20);
+      let within = false;
+      for (const r of rivals) { const gap = rivalDist(r) - pd; if (gap > 0 && gap / pv < 1.0) { within = true; break; } }
+      allowed = inZone && within;
+    }
+  }
+  s.drsAvail = allowed;
+  if (input.drsWant && allowed && onThrottle && !braking && speed > 20) s.drsOpen = true;
+  if (braking || !inZone || speed < 18) { s.drsOpen = false; if (braking || !inZone) input.drsWant = false; }
+}
 function physStep(dt) {
   updatePitState();
+  updateCarSystems(dt);
   const n = 3, h = dt / n;
   for (let k = 0; k < n; k++) physCore(h);
 }
@@ -1148,7 +1193,10 @@ function physCore(dt) {
   // throttle always pulls forward — including out of reverse
   let FxDrive = 0, FxBrakeF = 0, FxBrakeR = 0;
   if (s.thr > 0.01) {
-    FxDrive = s.thr * Math.min(14000, POWER / Math.max(vLong, 8));
+    // ERS deployment adds drive force (biggest effect at high speed, where the
+    // engine is power- not traction-limited)
+    const ersMul = 1 + (s.ersDeploy ? (s.ersOT ? ERS_BOOST_OT : ERS_BOOST_BAL) : 0);
+    FxDrive = s.thr * Math.min(14000 * ersMul, POWER * ersMul / Math.max(vLong, 8));
     // traction control: while steering, leave the rear tires lateral headroom
     // so power-on corner exits can't pitch the car into a slide
     const tcCap = assistsOn ? (0.78 - 0.25 * Math.min(1, Math.abs(s.steer))) : 0.95;
@@ -1169,7 +1217,8 @@ function physCore(dt) {
   const dirL = vLong >= 0 ? 1 : -1;
   const FxF = -FxBrakeF * dirL;
   const FxR = FxDrive - FxBrakeR * dirL;
-  const Fdrag = (0.5 * 1.22 * CDA * speed * speed + 320 + (onTrack ? 0 : 1800)) * dirL;
+  const cda = s.drsOpen ? CDA * DRS_DRAG : CDA;   // DRS drops drag → higher top speed
+  const Fdrag = (0.5 * 1.22 * cda * speed * speed + 320 + (onTrack ? 0 : 1800)) * dirL;
 
   // --- lateral tire forces: slip angles, saturation, traction circle ---
   const vRef = Math.max(Math.abs(vLong), 1);
@@ -1311,6 +1360,12 @@ addEventListener('keydown', e => {
       break;
     case 'KeyB': if (car.userData.imported) car.userData.imported.rotation.y += Math.PI / 2; break;
     case 'KeyM': muted = !muted; break;
+    case 'ShiftLeft': case 'ShiftRight': input.overtake = true; break;
+    case 'Space': input.drsWant = true; e.preventDefault(); break;
+    case 'KeyE':
+      state.ersMode = state.ersMode === 1 ? 0 : 1;
+      flashLap(state.ersMode === 1 ? 'ERS: BALANCED — auto-deploy' : 'ERS: HARVEST — saving battery');
+      break;
     case 'Digit1': state.nextCompound = 'S'; flashLap('NEXT STOP: SOFT'); break;
     case 'Digit2': state.nextCompound = 'M'; flashLap('NEXT STOP: MEDIUM'); break;
     case 'Digit3': state.nextCompound = 'H'; flashLap('NEXT STOP: HARD'); break;
@@ -1322,6 +1377,7 @@ addEventListener('keyup', e => {
     case 'KeyS': case 'ArrowDown': input.brake = 0; break;
     case 'KeyA': case 'ArrowLeft': input.left = false; break;
     case 'KeyD': case 'ArrowRight': input.right = false; break;
+    case 'ShiftLeft': case 'ShiftRight': input.overtake = false; break;
   }
 });
 
@@ -1501,6 +1557,16 @@ function updateHUD(speedKmh) {
     pm.textContent = '● PIT LIMITER ' + Math.round(PIT_LIMIT * 3.6);
     pm.className = 'hud show lim';
   } else pm.className = 'hud';
+
+  // ERS battery + mode
+  $('ersfill').style.width = Math.round(state.ers * 100) + '%';
+  $('erspct').textContent = Math.round(state.ers * 100) + '%';
+  const em = $('ersmode');
+  if (state.ersOT) { em.textContent = 'OVERTAKE'; em.className = 'ot'; }
+  else if (state.ersDeploy) { em.textContent = 'DEPLOY'; em.className = 'deploy'; }
+  else { em.textContent = state.brk > 0.05 ? 'HARVESTING' : (state.ersMode === 1 ? 'ERS BALANCED' : 'ERS HARVEST'); em.className = ''; }
+  // DRS indicator
+  $('drs').className = state.drsOpen ? 'hud open' : state.drsAvail ? 'hud avail' : 'hud';
 
   return rpmFrac;
 }
@@ -2017,6 +2083,9 @@ function clearPlayerLaps() {
   // reset sector timing (fresh best sectors each session)
   state.sec = 0; state.secStart = 0; state.secLap = [null, null, null];
   state.secBest = [null, null, null]; state.secCol = ['', '', ''];
+  // reset ERS (start with a useful charge) + DRS
+  state.ers = 0.7; state.ersDeploy = false; state.ersOT = false;
+  state.drsAvail = false; state.drsOpen = false; state.drsAnn = false;
   // fresh tyres of the chosen compound, and a clean pit state, each session
   state.tire = { compound: state.nextCompound || 'M', wear: 0 };
   state.pitRun = false; state.pitLimiter = false;
@@ -2232,6 +2301,17 @@ let camInit = false;
 let acc = 0, lastT = performance.now(), lcdAcc = 0, pitchSm = 0, slopeSm = 0;
 const FIXED = 1 / 120;
 
+// HUD shift-light strip: 15 LEDs, lit by rpm, all flashing blue at the limiter
+const shiftEls = [];
+{ const sl = document.getElementById('shiftlights');
+  for (let i = 0; i < 15; i++) { const s = document.createElement('span'); sl.appendChild(s); shiftEls.push(s); } }
+function updateShiftLights(rpmFrac, driving, flash) {
+  document.getElementById('shiftlights').classList.toggle('show', !!driving);
+  if (!driving) return;
+  const lit = Math.round(rpmFrac * 15);
+  for (let i = 0; i < 15; i++) shiftEls[i].className = flash ? 'b' : (i < lit ? (i < 9 ? 'g' : 'r') : '');
+}
+
 function frame() {
   if (window.__gen !== GEN) return; // a newer module instance took over
   requestAnimationFrame(frame);
@@ -2311,8 +2391,19 @@ function frame() {
 
   const kmh = speed * 3.6;
   const rpmFrac = updateHUD(kmh);
+  // rev lights: wheel LEDs + HUD shift strip, flashing blue at the limiter
   const lit = Math.round(rpmFrac * 12);
-  car.userData.leds.forEach((led, k) => { led.visible = k < lit; });
+  const limiterFlash = rpmFrac > 0.985 && Math.floor(now / 55) % 2 === 0;
+  car.userData.leds.forEach((led, k) => {
+    led.visible = limiterFlash || k < lit;
+    led.material.color.setHex(limiterFlash ? 0x2040ff : (k < 6 ? 0x1fbf3a : k < 9 ? 0xd82020 : 0x2040ff));
+  });
+  updateShiftLights(rpmFrac, sess.mode !== 'menu', limiterFlash);
+  // rear-wing DRS flap lies flat when open
+  if (car.userData.drsFlap) {
+    const f = car.userData.drsFlap;
+    f.rotation.x += ((state.drsOpen ? -0.05 : -0.5) - f.rotation.x) * Math.min(1, dt * 12);
+  }
 
   // kerb rumble: shake the camera when riding the painted kerbs
   const hwK = info.lateral > 0 ? HWp[info.idx] : HWm[info.idx];
@@ -2324,26 +2415,43 @@ function frame() {
     camPos.x += (Math.random() - 0.5) * 0.015;
   }
 
-  // steering-wheel LCD (redrawn ~10x/s)
+  // steering-wheel LCD (redrawn ~10x/s): gear, speed, ERS battery + mode, delta
   lcdAcc += dt;
   if (lcdAcc > 0.1) {
     lcdAcc = 0;
     const { ctx, tex } = car.userData.lcd;
     ctx.fillStyle = '#0a0e12'; ctx.fillRect(0, 0, 256, 160);
     ctx.strokeStyle = '#2a3644'; ctx.lineWidth = 3; ctx.strokeRect(2, 2, 252, 156);
+    // gear (big, centre)
     ctx.fillStyle = '#e8eef4'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = '900 84px Arial';
-    ctx.fillText(kmh < 3 ? 'N' : String(gearAt(kmh) + 1), 128, 84);
-    ctx.font = 'bold 26px Arial'; ctx.textAlign = 'left';
+    ctx.font = '900 74px Arial';
+    ctx.fillText(kmh < 3 ? 'N' : String(gearAt(kmh) + 1), 128, 66);
+    // speed (top-left) + lap (top-right)
+    ctx.font = 'bold 26px Arial'; ctx.textAlign = 'left'; ctx.fillStyle = '#e8eef4';
     ctx.fillText(String(Math.round(kmh)), 12, 24);
-    ctx.font = '13px Arial'; ctx.fillStyle = '#8899aa';
-    ctx.fillText('KM/H', 12, 44);
+    ctx.font = '12px Arial'; ctx.fillStyle = '#8899aa'; ctx.fillText('KM/H', 12, 42);
     ctx.textAlign = 'right'; ctx.font = 'bold 20px Arial'; ctx.fillStyle = '#e8eef4';
-    ctx.fillText('L' + state.lap, 246, 24);
+    ctx.fillText('L' + Math.max(state.lap, 0), 246, 22);
+    // ERS battery bar (bottom-left)
+    ctx.fillStyle = '#8899aa'; ctx.font = '12px Arial'; ctx.textAlign = 'left';
+    ctx.fillText('BATT ' + Math.round(state.ers * 100) + '%', 12, 114);
+    ctx.fillStyle = '#1a2430'; ctx.fillRect(12, 124, 110, 12);
+    ctx.fillStyle = state.ersOT ? '#ffd34d' : state.ersDeploy ? '#39d0ff' : '#25c46a';
+    ctx.fillRect(12, 124, 110 * state.ers, 12);
+    // ERS mode (bottom-right)
+    ctx.textAlign = 'right'; ctx.font = 'bold 15px Arial';
+    ctx.fillStyle = state.ersOT ? '#ffd34d' : state.ersDeploy ? '#39d0ff' : '#8899aa';
+    ctx.fillText(state.ersOT ? 'OVERTAKE' : state.ersDeploy ? 'DEPLOY' : (state.brk > 0.05 ? 'HARVEST' : 'BALANCED'), 246, 114);
+    // delta (centre) + DRS flag when open
     if (state.deltaStr) {
-      ctx.textAlign = 'center'; ctx.font = 'bold 26px Arial';
+      ctx.textAlign = 'center'; ctx.font = 'bold 22px Arial';
       ctx.fillStyle = state.deltaAhead ? '#4be07a' : '#ff6060';
-      ctx.fillText(state.deltaStr, 128, 140);
+      ctx.fillText(state.deltaStr, 128, 148);
+    }
+    if (state.drsOpen) {
+      ctx.fillStyle = '#25e05a'; ctx.fillRect(196, 140, 40, 16);
+      ctx.fillStyle = '#04240f'; ctx.font = '900 11px Arial'; ctx.textAlign = 'center';
+      ctx.fillText('DRS', 216, 148);
     }
     tex.needsUpdate = true;
   }
@@ -2359,7 +2467,7 @@ frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU,
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {

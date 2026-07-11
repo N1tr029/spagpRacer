@@ -145,6 +145,27 @@
     border: 2px solid #4a4a4a; box-shadow: inset 0 -3px 6px rgba(0,0,0,.5); }
   #startlights span.on { background: radial-gradient(circle at 40% 35%, #ff7a5a, #e01000); border-color: #ff5533; box-shadow: 0 0 26px #ff2200; }
   #startlights.go span { background: radial-gradient(circle at 40% 35%, #7affab, #12b048); border-color: #22e055; box-shadow: 0 0 26px #22e055; }
+
+  #shiftlights { left: 50%; transform: translateX(-50%); top: 6px; display: none; gap: 4px; }
+  #shiftlights.show { display: flex; }
+  #shiftlights span { width: 12px; height: 12px; border-radius: 50%; background: #1a1d22; box-shadow: inset 0 0 2px #000; }
+  #shiftlights span.g { background: #25e05a; box-shadow: 0 0 7px #25e05a; }
+  #shiftlights span.r { background: #ff3020; box-shadow: 0 0 7px #ff3020; }
+  #shiftlights span.b { background: #2f80ff; box-shadow: 0 0 10px #4f96ff; }
+
+  #ersrow { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 7px 0 2px auto; }
+  #ersbar { width: 150px; height: 6px; background: rgba(255,255,255,.15); border-radius: 3px; overflow: hidden; }
+  #ersfill { height: 100%; width: 100%; background: linear-gradient(90deg, #12c46a, #8ef0b0); }
+  #erspct { font-size: 12px; opacity: .75; font-variant-numeric: tabular-nums; width: 34px; text-align: right; }
+  #ersmode { font-size: 11px; letter-spacing: 1.5px; opacity: .55; text-align: right; }
+  #ersmode.deploy { color: #39d0ff; opacity: .95; }
+  #ersmode.ot { color: #ffd34d; opacity: 1; }
+
+  #drs { left: 50%; transform: translateX(-50%); bottom: 152px; font-size: 21px; font-weight: 900;
+    letter-spacing: 3px; padding: 4px 15px; border-radius: 8px; border: 2px solid transparent; opacity: 0;
+    transition: opacity .15s; }
+  #drs.avail { opacity: 1; color: #39d0ff; border-color: #39d0ff; background: rgba(10,30,45,.5); }
+  #drs.open { opacity: 1; color: #04240f; border-color: #25e05a; background: #25e05a; text-shadow: none; }
 </style>
 </head>
 <body>
@@ -192,6 +213,8 @@
     <div id="speed">0</div>
     <div id="speedUnit">KM/H</div>
     <div id="gear">N</div>
+    <div id="ersrow"><div id="ersbar"><div id="ersfill"></div></div><span id="erspct">100%</span></div>
+    <div id="ersmode">ERS BALANCED</div>
   </div>
   <div class="hud" id="timing">
     <div class="lap-current" id="lapTime">0:00.000</div>
@@ -206,6 +229,8 @@
     </div>
   </div>
   <div class="hud" id="lapflash"></div>
+  <div class="hud" id="shiftlights"></div>
+  <div class="hud" id="drs">DRS</div>
   <div class="hud" id="modebar">PRACTICE</div>
   <div class="hud" id="startlights"><span></span><span></span><span></span><span></span><span></span></div>
   <div class="hud" id="tower"></div>
@@ -218,7 +243,7 @@
   </div>
   <canvas id="minimap" width="190" height="190"></canvas>
   <div class="hud" id="help">
-    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>1/2/3</b> tyres &nbsp; <b>O</b> setup &nbsp; <b>Esc</b> menu &nbsp; <b>M</b> mute
+    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>Shift</b> ERS boost &nbsp; <b>Space</b> DRS &nbsp; <b>E</b> ERS mode &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>1/2/3</b> tyres &nbsp; <b>O</b> setup &nbsp; <b>Esc</b> menu &nbsp; <b>M</b> mute
   </div>
   <div id="settings">
     <div class="tabs">
