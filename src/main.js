@@ -221,6 +221,41 @@ composer.addPass(gradePass);
   sky.geometry.dispose(); sky.material.dispose(); pmrem.dispose();
 }
 
+// ---------------------------------------------------------------------------
+// Rear-view mirror: render the view behind the car into an offscreen target,
+// then draw it into a strip up top flipped left-right, like a real mirror
+// ---------------------------------------------------------------------------
+const RVW = 640, RVH = 180;
+const rearRT = new THREE.WebGLRenderTarget(RVW, RVH, { samples: 4 });
+rearRT.texture.colorSpace = THREE.SRGBColorSpace;
+const rearCam = new THREE.PerspectiveCamera(64, RVW / RVH, 0.3, 2200);
+const rvScene = new THREE.Scene();
+const rvCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 2); rvCam.position.z = 1;
+const rvQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2),
+  new THREE.MeshBasicMaterial({ map: rearRT.texture, depthTest: false, depthWrite: false, toneMapped: false }));
+{ const uv = rvQuad.geometry.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setX(i, 1 - uv.getX(i)); uv.needsUpdate = true; }  // flip U = mirror
+rvScene.add(rvQuad);
+let rearOn = true;
+const _rvEye = new THREE.Vector3(), _rvLook = new THREE.Vector3();
+function renderRearView() {
+  const el = document.getElementById('rearview');
+  const show = rearOn && sess.mode !== 'menu' && !podiumActive && !state.pitFrozen
+    && !(sess.mode === 'race' && sess.phase === 'lights');
+  if (!show) { el.classList.remove('show'); return; }
+  el.classList.add('show');
+  car.updateMatrixWorld(true);
+  _rvEye.set(0, 1.85, -0.2).applyMatrix4(car.matrixWorld);      // above/behind the cockpit
+  _rvLook.set(0, 1.05, -32).applyMatrix4(car.matrixWorld);      // ~32 m back, angled down
+  rearCam.position.copy(_rvEye); rearCam.up.set(0, 1, 0); rearCam.lookAt(_rvLook);
+  renderer.setRenderTarget(rearRT); renderer.clear(); renderer.render(scene, rearCam); renderer.setRenderTarget(null);
+  const w = innerWidth, h = innerHeight;
+  const sw = Math.min(460, w * 0.42), sh = sw * RVH / RVW, sx = (w - sw) / 2, sy = h - sh - 54;
+  renderer.autoClear = false;
+  renderer.setViewport(sx, sy, sw, sh); renderer.setScissor(sx, sy, sw, sh); renderer.setScissorTest(true);
+  renderer.render(rvScene, rvCam);
+  renderer.setScissorTest(false); renderer.setViewport(0, 0, w, h); renderer.autoClear = true;
+}
+
 // Soft cloud billboards for sky depth (sprites always face the camera)
 {
   const cc = document.createElement('canvas'); cc.width = 256; cc.height = 128;
@@ -1530,6 +1565,10 @@ addEventListener('keydown', e => {
     case 'KeyV':
       tvMode = !tvMode;
       flashLap(tvMode ? 'BROADCAST CAMERAS' : 'DRIVER CAMERA');
+      break;
+    case 'KeyF':
+      rearOn = !rearOn;
+      flashLap(rearOn ? 'REAR VIEW ON' : 'REAR VIEW OFF');
       break;
     case 'KeyO':
       toggleSettings();
@@ -2875,12 +2914,13 @@ function frame() {
   drawMinimap();
 
   composer.render();
+  renderRearView();
 }
 frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, showPodium, podium, endRace, composer, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, showPodium, podium, endRace, composer, renderRearView, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {

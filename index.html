@@ -147,6 +147,10 @@
   #startlights span.on { background: radial-gradient(circle at 40% 35%, #ff7a5a, #e01000); border-color: #ff5533; box-shadow: 0 0 26px #ff2200; }
   #startlights.go span { background: radial-gradient(circle at 40% 35%, #7affab, #12b048); border-color: #22e055; box-shadow: 0 0 26px #22e055; }
 
+  #rearview { top: 52px; left: 50%; transform: translateX(-50%); width: min(460px, 42vw); aspect-ratio: 640 / 180;
+    border: 2px solid rgba(255,255,255,.32); border-radius: 7px; box-shadow: 0 3px 12px rgba(0,0,0,.5); display: none; }
+  #rearview.show { display: block; }
+
   #shiftlights { left: 50%; transform: translateX(-50%); top: 6px; display: none; gap: 4px; }
   #shiftlights.show { display: flex; }
   #shiftlights span { width: 12px; height: 12px; border-radius: 50%; background: #1a1d22; box-shadow: inset 0 0 2px #000; }
@@ -177,11 +181,11 @@
   #mfd .minfo { display: flex; gap: 9px; margin-top: 6px; font-size: 10px; letter-spacing: .3px; opacity: .8; }
   #mfd .minfo b { color: #ffd34d; font-weight: 800; }
 
-  #flag { left: 50%; transform: translateX(-50%); top: 52px; font-size: 15px; font-weight: 900; letter-spacing: 3px;
+  #flag { left: 50%; transform: translateX(-50%); top: 188px; font-size: 15px; font-weight: 900; letter-spacing: 3px;
     padding: 4px 16px; border-radius: 6px; opacity: 0; transition: opacity .2s; }
   #flag.blue { opacity: 1; background: #1560d0; color: #fff; }
   #flag.yellow { opacity: 1; background: #f4c60b; color: #201700; }
-  #penalty { left: 50%; transform: translateX(-50%); top: 126px; font-size: 14px; font-weight: 800;
+  #penalty { left: 50%; transform: translateX(-50%); top: 216px; font-size: 14px; font-weight: 800;
     letter-spacing: 2px; color: #ff6a3d; opacity: 0; }
   #penalty.show { opacity: 1; }
 </style>
@@ -247,6 +251,7 @@
     </div>
   </div>
   <div class="hud" id="lapflash"></div>
+  <div class="hud" id="rearview"></div>
   <div class="hud" id="shiftlights"></div>
   <div class="hud" id="drs">DRS</div>
   <div class="hud" id="modebar">PRACTICE</div>
@@ -271,7 +276,7 @@
   </div>
   <canvas id="minimap" width="190" height="190"></canvas>
   <div class="hud" id="help">
-    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>Shift</b> ERS boost &nbsp; <b>Space</b> DRS &nbsp; <b>E</b> ERS &nbsp; <b>Q</b> engine &nbsp; <b>[ ]</b> brake bias &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>1/2/3</b> tyres &nbsp; <b>O</b> setup &nbsp; <b>Esc</b> menu &nbsp; <b>M</b> mute
+    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>Shift</b> ERS boost &nbsp; <b>Space</b> DRS &nbsp; <b>E</b> ERS &nbsp; <b>Q</b> engine &nbsp; <b>[ ]</b> brake bias &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>F</b> rear view &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>1/2/3</b> tyres &nbsp; <b>O</b> setup &nbsp; <b>Esc</b> menu &nbsp; <b>M</b> mute
   </div>
   <div id="settings">
     <div class="tabs">
