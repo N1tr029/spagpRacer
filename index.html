@@ -96,18 +96,34 @@
     border: 1px solid rgba(255,255,255,.14); }
   #modebar .q { color: #e10600; }
   #modebar .clock { color: #ffd34d; font-variant-numeric: tabular-nums; margin-left: 8px; }
-  #tower { right: 24px; top: 232px; width: 178px; font-size: 12px; display: none;
-    background: rgba(10,14,20,.72); border-radius: 8px; padding: 6px; }
+  #tower { right: 24px; top: 232px; width: 212px; font-size: 12px; display: none;
+    background: rgba(10,14,20,.78); border-radius: 8px; padding: 6px 6px 7px; }
   #tower.show { display: block; }
-  #tower .th { font-size: 10px; letter-spacing: 1.5px; opacity: .55; padding: 2px 6px 5px; }
-  #tower .r { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px;
-    font-variant-numeric: tabular-nums; }
-  #tower .r .pos { width: 16px; opacity: .6; text-align: right; }
-  #tower .r .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-  #tower .r .nm { flex: 1; font-weight: 700; letter-spacing: .5px; }
-  #tower .r .tm { opacity: .85; }
-  #tower .r.you { background: rgba(225,6,0,.28); }
+  #tower .th { font-size: 10px; letter-spacing: 1.5px; opacity: .6; padding: 2px 4px 6px;
+    display: flex; justify-content: space-between; align-items: center; }
+  #tower .th .laps { color: #ffd34d; font-weight: 800; letter-spacing: 1px; }
+  #tower .r { display: flex; align-items: center; gap: 5px; padding: 2.5px 4px; border-radius: 4px;
+    font-variant-numeric: tabular-nums; position: relative; }
+  #tower .r .pos { width: 15px; opacity: .55; text-align: right; font-weight: 700; }
+  #tower .r .bar { width: 3.5px; height: 15px; border-radius: 1px; flex: none; }
+  #tower .r .nm { flex: 1; font-weight: 700; letter-spacing: .3px; white-space: nowrap; overflow: hidden; }
+  #tower .r .tyre { width: 15px; height: 15px; border-radius: 50%; flex: none; font-size: 9px;
+    font-weight: 900; display: flex; align-items: center; justify-content: center; border: 1.5px solid; }
+  #tower .r .gap { width: 48px; text-align: right; opacity: .9; font-size: 11.5px; }
+  #tower .r.you { background: rgba(225,6,0,.30); }
   #tower .r.you .nm { color: #fff; }
+  #tower .r.fastest .nm { color: #c98bff; }
+  #tower .r.fastest .pos { color: #c98bff; opacity: .9; }
+
+  #sectors { display: flex; gap: 5px; margin-top: 7px; }
+  #sectors .s { flex: 1; font-size: 12.5px; font-weight: 800; font-variant-numeric: tabular-nums;
+    padding: 3px 2px 4px; border-radius: 4px; background: rgba(255,255,255,.09); text-align: center;
+    color: #cfd6de; line-height: 1.1; }
+  #sectors .s .lbl { display: block; font-size: 8.5px; opacity: .55; letter-spacing: 1px; font-weight: 700; }
+  #sectors .s.p { background: rgba(150,60,220,.9); color: #fff; }
+  #sectors .s.g { background: rgba(38,175,88,.9); color: #fff; }
+  #sectors .s.y { background: rgba(210,178,40,.82); color: #1a1200; }
+  #sectors .s.cur { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.55); }
 
   #tirebox { right: 28px; bottom: 220px; text-align: right; font-variant-numeric: tabular-nums; }
   #tirebox .trow { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
@@ -183,6 +199,11 @@
     <div class="row"><span class="label">LAST</span><span id="lastLap">—</span></div>
     <div class="row"><span class="label">BEST</span><span id="bestLap">—</span></div>
     <div class="row"><span class="label">LAP</span><span id="lapCount">0</span></div>
+    <div id="sectors">
+      <div class="s" id="sec0"><span class="lbl">S1</span><span id="sec0v">—</span></div>
+      <div class="s" id="sec1"><span class="lbl">S2</span><span id="sec1v">—</span></div>
+      <div class="s" id="sec2"><span class="lbl">S3</span><span id="sec2v">—</span></div>
+    </div>
   </div>
   <div class="hud" id="lapflash"></div>
   <div class="hud" id="modebar">PRACTICE</div>

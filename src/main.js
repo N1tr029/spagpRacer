@@ -993,6 +993,8 @@ const state = {
   tire: { compound: 'M', wear: 0 }, nextCompound: 'M',
   pitK: 0, onPitLane: false, pitRun: false, pitLimiter: false,
   pitService: 0, pitServiced: false, pitFrozen: false,
+  // live sector timing (0/1/2), personal-best per sector, colour code p/g/y
+  sec: 0, secStart: 0, secLap: [null, null, null], secBest: [null, null, null], secCol: ['', '', ''],
 };
 
 const MASS = 800, POWER = 690000, MU = 1.75, DFK = 0.0062, CDA = 1.45;
@@ -1009,6 +1011,10 @@ const TCOMP = {
   H: { name: 'HARD',   short: 'H', col: '#e9edf2', grip: 0.96, wear: 0.6 },
 };
 const PIT_STOP_TIME = 2.6;   // seconds stationary in the box for a tyre change
+
+// three timing sectors, split by fraction of the lap (~Spa's real split points)
+const SEC_BOUND = [TRACK_LEN * 0.32, TRACK_LEN * 0.68];
+const secOf = prog => prog < SEC_BOUND[0] ? 0 : prog < SEC_BOUND[1] ? 1 : 2;
 
 function trackInfo(x, z, hint) {
   let bi = hint, bd = 1e18;
@@ -1228,10 +1234,25 @@ function physCore(dt) {
 
   // lap timing via progress
   const prog = info2.s;
+  const now = performance.now();
+  // sector splits: close a sector the instant progress crosses its boundary
+  if (s.running) {
+    const ns = secOf(prog);
+    if (ns === s.sec + 1) {
+      const t = now - s.secStart;
+      s.secLap[s.sec] = t;
+      if (s.secBest[s.sec] == null || t < s.secBest[s.sec]) { s.secBest[s.sec] = t; s.secCol[s.sec] = 'p'; }
+      else s.secCol[s.sec] = 'y';
+      s.sec = ns; s.secStart = now;
+    }
+  }
   if (s.prog > TRACK_LEN - 60 && prog < 60 && vF > 3) {
-    const now = performance.now();
     if (s.running) {
       s.last = now - s.lapStart;
+      const t3 = now - s.secStart;                 // close the final sector (S3) at the line
+      s.secLap[2] = t3;
+      if (s.secBest[2] == null || t3 < s.secBest[2]) { s.secBest[2] = t3; s.secCol[2] = 'p'; }
+      else s.secCol[2] = 'y';
       if (!s.best || s.last < s.best) {
         s.best = s.last;
         s.bestT = s.curT.slice(); // checkpoint times of the new best lap
@@ -1240,6 +1261,7 @@ function physCore(dt) {
     }
     s.lap++; s.lapStart = now; s.running = true;
     s.curT.fill(-1);
+    s.sec = 0; s.secStart = now; s.secLap = [null, null, null];   // new lap, keep bests
   }
   s.prog = prog;
   // record checkpoint time the first time each track point is reached this lap
@@ -1439,6 +1461,15 @@ function updateHUD(speedKmh) {
   $('lapCount').textContent = state.lap;
   $('offtrack').style.opacity = onTrackState ? 0 : 1;
 
+  // sector timing strip (purple = personal best sector, yellow = slower)
+  for (let k = 0; k < 3; k++) {
+    const box = $('sec' + k);
+    let cls = 's', txt = '—';
+    if (state.running && state.sec === k) { cls = 's cur'; txt = ((performance.now() - state.secStart) / 1000).toFixed(1); }
+    else if (state.secLap[k] != null) { cls = 's ' + (state.secCol[k] || ''); txt = (state.secLap[k] / 1000).toFixed(1); }
+    box.className = cls; $('sec' + k + 'v').textContent = txt;
+  }
+
   // corner name banner
   let name = '';
   for (const c of CORNERS) {
@@ -1498,10 +1529,26 @@ function drawMinimap() {
   const p0 = P(0);
   mm.fillStyle = '#ffd34d';
   mm.fillRect(mmX(p0[0]) - 2.5, mmZ(p0[2]) - 2.5, 5, 5);
+  // rival cars as team-coloured dots (race / quali only)
+  if (sess.mode === 'race' || sess.mode === 'quali') {
+    for (const r of rivals) {
+      const rp = r.mesh.position;
+      mm.beginPath();
+      mm.arc(mmX(rp.x), mmZ(rp.z), 3.2, 0, 7);
+      mm.fillStyle = '#' + r.def.color.toString(16).padStart(6, '0');
+      mm.fill();
+      mm.lineWidth = 1; mm.strokeStyle = 'rgba(0,0,0,.55)'; mm.stroke();
+    }
+  }
+  // player on top: heading tick + red dot
+  const px = mmX(state.x), pz = mmZ(state.z);
+  mm.beginPath(); mm.moveTo(px, pz);
+  mm.lineTo(px + Math.sin(state.heading) * 9, pz + Math.cos(state.heading) * 9);
+  mm.strokeStyle = '#fff'; mm.lineWidth = 2; mm.stroke();
   mm.beginPath();
-  mm.arc(mmX(state.x), mmZ(state.z), 4, 0, 7);
+  mm.arc(px, pz, 4.2, 0, 7);
   mm.fillStyle = '#e10600'; mm.fill();
-  mm.strokeStyle = '#fff'; mm.lineWidth = 1.2; mm.stroke();
+  mm.strokeStyle = '#fff'; mm.lineWidth = 1.4; mm.stroke();
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,14 +1757,14 @@ addEventListener('drop', e => {
 // no collision). Positions rank by distance covered.
 // ---------------------------------------------------------------------------
 const RIVALS_DEF = [
-  { name: 'VER', color: 0x1f3a93, lap: 136.0 },
-  { name: 'LEC', color: 0xd42020, lap: 137.6 },
-  { name: 'RUS', color: 0x00a19c, lap: 139.2 },
-  { name: 'PIA', color: 0xff8000, lap: 140.8 },
-  { name: 'SAI', color: 0xd42020, lap: 142.4 },
-  { name: 'ALO', color: 0x0a7d68, lap: 144.2 },
-  { name: 'HAM', color: 0x00a19c, lap: 146.0 },
-  { name: 'GAS', color: 0x2f6fb0, lap: 148.0 },
+  { name: 'VER', full: 'VERSTAPPEN', color: 0x1f3a93, lap: 136.0 },
+  { name: 'LEC', full: 'LECLERC',    color: 0xd42020, lap: 137.6 },
+  { name: 'RUS', full: 'RUSSELL',    color: 0x00a19c, lap: 139.2 },
+  { name: 'PIA', full: 'PIASTRI',    color: 0xff8000, lap: 140.8 },
+  { name: 'SAI', full: 'SAINZ',      color: 0xd42020, lap: 142.4 },
+  { name: 'ALO', full: 'ALONSO',     color: 0x0a7d68, lap: 144.2 },
+  { name: 'HAM', full: 'HAMILTON',   color: 0x00a19c, lap: 146.0 },
+  { name: 'GAS', full: 'GASLY',      color: 0x2f6fb0, lap: 148.0 },
 ];
 function makeRivalCar(color) {
   const grp = new THREE.Group();
@@ -1780,7 +1827,7 @@ const rivals = RIVALS_DEF.map((def) => {
   // skill scales corner speed (fastest driver = highest); aggression drives
   // defending/overtaking; react = launch reaction delay at the start.
   const skill = 1.0 - (def.lap - 136) / 12 * 0.09;
-  return { def, mesh, u: 0, v: 0, lat: 0, latV: 0, gridLat: null, skill,
+  return { def, mesh, u: 0, v: 0, lat: 0, latV: 0, gridLat: null, skill, tire: 'M',
     aggr: 0.3 + Math.random() * 0.6, react: 0.12 + Math.random() * 0.35, errT: 3 + Math.random() * 6, errUntil: 0 };
 });
 const GRID_BLEND = 4.5; // seconds to merge from grid box onto the racing line
@@ -1967,6 +2014,9 @@ const playerRacePos = () => rivals.filter(r => rivalDist(r) > playerDist()).leng
 function clearPlayerLaps() {
   state.lap = 0; state.best = null; state.last = null; state.bestT = null;
   state.running = false; state.curT.fill(-1);
+  // reset sector timing (fresh best sectors each session)
+  state.sec = 0; state.secStart = 0; state.secLap = [null, null, null];
+  state.secBest = [null, null, null]; state.secCol = ['', '', ''];
   // fresh tyres of the chosen compound, and a clean pit state, each session
   state.tire = { compound: state.nextCompound || 'M', wear: 0 };
   state.pitRun = false; state.pitLimiter = false;
@@ -1982,6 +2032,8 @@ function startRace(playerGrid) {
   rivalsGroup.visible = true; showTower(true);
   gridBoxes.visible = true; startLights.visible = true;
   updateStartLights(0, false);
+  // rival starting tyres: a mixed grid (mostly mediums, some softs/hards)
+  rivals.forEach(r => { const x = Math.random(); r.tire = x < 0.55 ? 'M' : x < 0.82 ? 'S' : 'H'; });
   // pole = fastest; player slots in at playerGrid (default: the back)
   const order = rivals.slice().sort((a, b) => a.def.lap - b.def.lap);
   const pg = playerGrid != null ? playerGrid : rivals.length;
@@ -2038,26 +2090,45 @@ function updateModeBar() {
     el.innerHTML = `<span class="q">RACE</span><span class="clock">LAP ${lap}/${sess.laps} · P${playerRacePos()}</span>`;
   }
 }
-function towerRow(pos, color, name, right, you) {
-  return `<div class="r${you ? ' you' : ''}"><span class="pos">${pos}</span>`
-    + `<span class="dot" style="background:#${color.toString(16).padStart(6, '0')}"></span>`
-    + `<span class="nm">${name}</span><span class="tm">${right}</span></div>`;
+const TYRE_COL = { S: '#e5342b', M: '#e8c43a', H: '#e9edf2' };
+function tyreDot(comp) {
+  const c = TYRE_COL[comp] || '#e8c43a';
+  return `<span class="tyre" style="border-color:${c};color:${c}">${comp}</span>`;
+}
+function towerRow(row) {
+  const col = '#' + row.color.toString(16).padStart(6, '0');
+  return `<div class="r${row.you ? ' you' : ''}${row.fastest ? ' fastest' : ''}">`
+    + `<span class="pos">${row.pos}</span>`
+    + `<span class="bar" style="background:${col}"></span>`
+    + `<span class="nm">${row.name}</span>`
+    + tyreDot(row.tyre)
+    + `<span class="gap">${row.gap}</span></div>`;
 }
 function updateTower() {
   const el = $id('tower');
   if (sess.mode === 'race') {
-    // lap number (1-based): rivals count from floor(u)+1, player from state.lap
-    const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, dist: rivalDist(r), lapNum: Math.floor(r.u) + 1, you: false }));
-    rows.push({ name: 'YOU', color: 0xffffff, dist: playerDist(), lapNum: state.lap, you: true });
+    // fastest-lap holder gets the purple name (rivals use their nominal pace)
+    let flName = null, flBest = Infinity;
+    for (const r of rivals) { const t = r.def.lap * 1000; if (t < flBest) { flBest = t; flName = r.def.name; } }
+    if (state.best && state.best < flBest) flName = 'YOU';
+    const rows = rivals.map(r => ({ id: r.def.name, name: r.def.full || r.def.name, color: r.def.color,
+      dist: rivalDist(r), v: r.v, tyre: r.tire, you: false }));
+    rows.push({ id: 'YOU', name: 'YOU', color: 0xffffff, dist: playerDist(),
+      v: Math.hypot(state.vx, state.vz), tyre: state.tire.compound, you: true });
     rows.sort((a, b) => b.dist - a.dist);
-    el.innerHTML = '<div class="th">RACE ORDER</div>' + rows.map((r, i) =>
-      towerRow(i + 1, r.color, r.name, 'L' + Math.min(Math.max(r.lapNum, 1), sess.laps), r.you)).join('');
+    const lead = rows[0].dist, racing = sess.phase === 'racing';
+    const lap = Math.min(Math.max(state.lap, 1), sess.laps);
+    el.innerHTML = `<div class="th"><span>RACE ORDER</span><span class="laps">LAP ${lap}/${sess.laps}</span></div>`
+      + rows.map((r, i) => towerRow({
+        pos: i + 1, color: r.color, name: r.name, tyre: r.tyre, you: r.you, fastest: r.id === flName,
+        gap: racing ? (i === 0 ? '' : '+' + ((lead - r.dist) / Math.max(r.v, 30)).toFixed(1)) : '',
+      })).join('');
   } else if (sess.mode === 'quali') {
-    const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, ms: r.def.lap * 1000, you: false }));
-    rows.push({ name: 'YOU', color: 0xffffff, ms: state.best || Infinity, you: true });
+    const rows = rivals.map(r => ({ name: r.def.full || r.def.name, color: r.def.color, ms: r.def.lap * 1000, tyre: r.tire, you: false }));
+    rows.push({ name: 'YOU', color: 0xffffff, ms: state.best || Infinity, tyre: state.tire.compound, you: true });
     rows.sort((a, b) => a.ms - b.ms);
-    el.innerHTML = '<div class="th">QUALIFYING</div>' + rows.map((r, i) =>
-      towerRow(i + 1, r.color, r.name, fmtShort(r.ms), r.you)).join('');
+    el.innerHTML = '<div class="th"><span>QUALIFYING</span></div>' + rows.map((r, i) =>
+      towerRow({ pos: i + 1, color: r.color, name: r.name, tyre: r.tyre, gap: fmtShort(r.ms), you: r.you, fastest: i === 0 })).join('');
   }
 }
 function updateSession(dt) {
@@ -2116,7 +2187,7 @@ function startGame(mode) {
   } else if (mode === 'quali') {
     sess.mode = 'quali'; sess.running = true; sess.timeLeft = menu.qmin * 60;
     rivalsGroup.visible = true; showTower(true);
-    rivals.forEach((r) => { r.u = Math.random(); r.lat = RACE[idxAtU(r.u)]; r.v = V_ALLOW[idxAtU(r.u)] * r.skill * 0.85; placeRival(r); });
+    rivals.forEach((r) => { r.u = Math.random(); r.lat = RACE[idxAtU(r.u)]; r.v = V_ALLOW[idxAtU(r.u)] * r.skill * 0.85; r.tire = 'S'; placeRival(r); });
     state.idx = 0; resetCar(); clearPlayerLaps();
     flashLap(`QUALIFYING — ${menu.qmin}:00 — set your fastest lap`);
   } else {
@@ -2288,7 +2359,7 @@ frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, updateSession, updateRivals, startRace, V_ALLOW, RACE, TRACK_LEN, idxAtU,
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {
