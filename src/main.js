@@ -1558,11 +1558,12 @@ function towerRow(pos, color, name, right, you) {
 function updateTower() {
   const el = $id('tower');
   if (sess.mode === 'race') {
-    const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, dist: rivalDist(r), laps: Math.floor(r.u), you: false }));
-    rows.push({ name: 'YOU', color: 0xffffff, dist: playerDist(), laps: state.lap, you: true });
+    // lap number (1-based): rivals count from floor(u)+1, player from state.lap
+    const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, dist: rivalDist(r), lapNum: Math.floor(r.u) + 1, you: false }));
+    rows.push({ name: 'YOU', color: 0xffffff, dist: playerDist(), lapNum: state.lap, you: true });
     rows.sort((a, b) => b.dist - a.dist);
     el.innerHTML = '<div class="th">RACE ORDER</div>' + rows.map((r, i) =>
-      towerRow(i + 1, r.color, r.name, 'L' + Math.max(1, r.laps + 1), r.you)).join('');
+      towerRow(i + 1, r.color, r.name, 'L' + Math.min(Math.max(r.lapNum, 1), sess.laps), r.you)).join('');
   } else if (sess.mode === 'quali') {
     const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, ms: r.def.lap * 1000, you: false }));
     rows.push({ name: 'YOU', color: 0xffffff, ms: state.best || Infinity, you: true });
