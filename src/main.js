@@ -589,6 +589,40 @@ function terrainHeight(x, z) {
   forest.forEach(ft => { ft.m.count = ft.n; ft.m.castShadow = false; scene.add(ft.m); });
 }
 
+// ---------------------------------------------------------------------------
+// Trackside furniture: marshal posts at every corner + stacked-tyre barriers
+// in front of the armco at the tighter corners
+// ---------------------------------------------------------------------------
+{
+  const orange = new THREE.MeshStandardMaterial({ color: 0xff7a00, roughness: 0.7 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x1a1c20, roughness: 0.85 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xcf9b6f, roughness: 0.75 });
+  const tyreMat = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.92 });
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0xcfd3d8, roughness: 0.6, metalness: 0.3 });
+  const yellow = new THREE.MeshStandardMaterial({ color: 0xf4c60b, roughness: 0.6 });
+  const headG = new THREE.SphereGeometry(0.16, 8, 6), tyreG = new THREE.CylinderGeometry(0.45, 0.45, 0.3, 12);
+  const add = (geo, mat, x, y, z, ry) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); if (ry) m.rotation.y = ry; m.castShadow = true; scene.add(m); return m; };
+  for (const c of CORNERS) {
+    const i = c.i, p = P(i), n = normals[i];
+    const side = Math.abs(CURV[i]) > 1e-4 ? -Math.sign(CURV[i]) : 1;   // corner outside
+    // marshal post: a raised platform + orange marshal + a flag pole, set back behind the barrier
+    const off = HWp[i] + 12, bx = p[0] + n[0] * side * off, bz = p[2] + n[1] * side * off, by = Math.max(terrainHeight(bx, bz), p[1] - 1);
+    const face = Math.atan2(-n[0] * side, -n[1] * side);   // look toward the track
+    add(new THREE.BoxGeometry(1.8, 0.3, 1.8), dark, bx, by + 0.15, bz);
+    add(new THREE.BoxGeometry(0.5, 0.9, 0.4), orange, bx, by + 0.75, bz, face);
+    add(headG, skin, bx, by + 1.34, bz);
+    add(new THREE.CylinderGeometry(0.05, 0.05, 3, 6), poleMat, bx + n[1] * 0.9, by + 1.5, bz - n[0] * 0.9);
+    add(new THREE.BoxGeometry(0.02, 0.5, 0.7), yellow, bx + n[1] * 0.9, by + 2.5, bz - n[0] * 0.9, face);
+    // tyre-stack barrier in front of the armco at tight corners
+    if (Math.abs(CURV[i]) < 0.012) continue;
+    for (let d = -5; d <= 5; d++) {
+      const j = ((i + d * 3) % N + N) % N, q = P(j), m = normals[j];
+      const to = HWp[j] + 8, tx = q[0] + m[0] * side * to, tz = q[2] + m[1] * side * to;
+      for (let s = 0; s < 2; s++) add(tyreG, tyreMat, tx, q[1] + 0.15 + s * 0.32, tz);
+    }
+  }
+}
+
 // barriers
 // F1-style trackside barrier texture: sponsor hoarding band + catch fence above,
 // mapped so the visible (above-ground) part reads hoarding-then-fence
