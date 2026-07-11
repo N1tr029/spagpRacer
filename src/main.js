@@ -1135,6 +1135,8 @@ function attachCarModel(model) {
   car.add(outer);
   outer.updateMatrixWorld(true);
   car.userData.imported = outer;
+  // snapshot the whole car (wheels still attached) to clone for the rivals
+  const rivalSource = outer.clone(true);
 
   // hide the placeholder car (the animated steering wheel + LCD stay)
   for (const part of car.userData.placeholderParts) {
@@ -1187,6 +1189,8 @@ function attachCarModel(model) {
     const contactY = hubs.reduce((a, h, i) => a + h.position.y - spinners[i].userData.radius, 0) / 4;
     level.position.y -= contactY;
     for (const hub of hubs) hub.position.y -= contactY;
+    // the rival field is this same model, recoloured per team
+    buildRivalModels(rivalSource, fix, contactY);
   }
   flashLap('CUSTOM CAR LOADED' + (spinners.length === 4 ? ' — wheels linked' : '') + ' — B rotates 90°');
 }
@@ -1337,6 +1341,37 @@ function makeRivalCar(color) {
   }
   return grp;
 }
+// clone the player's model and recolour its livery to a team colour, keeping
+// carbon/tyres dark; geometry is shared so eight clones stay cheap in memory
+function recolorClone(source, color) {
+  const clone = source.clone(true);
+  clone.traverse(o => {
+    if (!o.isMesh || !o.material) return;
+    o.castShadow = false; o.receiveShadow = false;
+    const recolor = m => {
+      const c = m.clone();
+      if (c.color) {
+        const lum = 0.299 * c.color.r + 0.587 * c.color.g + 0.114 * c.color.b;
+        if (lum > 0.12) c.color.setHex(color); // paint the livery, leave dark parts
+      }
+      if (c.emissive) c.emissive.setHex(0x000000);
+      return c;
+    };
+    o.material = Array.isArray(o.material) ? o.material.map(recolor) : recolor(o.material);
+  });
+  return clone;
+}
+// swap each rival's placeholder box for a recoloured clone of the real model
+function buildRivalModels(source, fix, contactY) {
+  for (const r of rivals) {
+    while (r.mesh.children.length) r.mesh.remove(r.mesh.children[0]);
+    const wrap = new THREE.Group();
+    wrap.rotation.copy(fix); wrap.position.y = -contactY;
+    wrap.add(recolorClone(source, r.def.color));
+    r.mesh.add(wrap);
+  }
+}
+
 const rivalsGroup = new THREE.Group();
 rivalsGroup.visible = false;
 scene.add(rivalsGroup);
