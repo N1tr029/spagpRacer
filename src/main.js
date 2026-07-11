@@ -18,6 +18,13 @@ const ASSET = import.meta.env.BASE_URL;
 // touch device? drives the on-screen controls + a lighter render for phones
 const IS_TOUCH = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
 
+// graphics quality (Low avoids the heavy passes so phones don't crash):
+//   low    = direct render, no post/env/shadows/mirror, 1x pixels
+//   medium = bloom + colour grade + env + shadows (no SMAA, no mirror)
+//   high   = everything (+ SMAA anti-aliasing + rear-view mirror)
+const QUALITY = localStorage.getItem('ardennes.quality') || (IS_TOUCH ? 'low' : 'high');
+const USE_POST = QUALITY !== 'low', USE_SMAA = QUALITY === 'high', USE_REAR = QUALITY === 'high', USE_SHADOW = QUALITY !== 'low';
+
 // real OSM forest extent around Spa (landuse=forest), rasterised to a grid in
 // game coordinates — trees only grow where there's actually forest, so La Source
 // and the pit straight stay open while Kemmel/Blanchimont are tree-lined
@@ -154,9 +161,9 @@ function pitInfo(x, z, hintK) {
 // Renderer / scene
 // ---------------------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.3 : 2));   // fewer pixels on phones
+renderer.setPixelRatio(Math.min(devicePixelRatio, QUALITY === 'low' ? 1 : QUALITY === 'medium' ? 1.5 : (IS_TOUCH ? 1.6 : 2)));
 renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = USE_SHADOW;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;   // softer, less aliased contact shadows
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.06;                // a touch darker; bloom adds the glow back
@@ -187,34 +194,35 @@ scene.add(sun); scene.add(sun.target);
 
 // Post-processing: a filmic bloom for sky/sun/kerb glow, then tone-map + sRGB.
 // A soft depth-vignette darkens the frame edges the way a broadcast lens does.
-const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
-const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.7, 0.82);
-composer.addPass(bloomPass);
-composer.addPass(new OutputPass());
-composer.addPass(new SMAAPass(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio()));
-// colour grade: gentle contrast + saturation + broadcast vignette, applied to
-// the tone-mapped image. This is what pulls the Ardennes greens out of the wash.
-const gradePass = new ShaderPass({
-  uniforms: { tDiffuse: { value: null }, contrast: { value: 1.11 }, saturation: { value: 1.22 }, vignette: { value: 0.85 } },
-  vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
-  fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float contrast, saturation, vignette; varying vec2 vUv;
-    void main(){
-      vec4 c = texture2D(tDiffuse, vUv); vec3 col = c.rgb;
-      col = (col - 0.5) * contrast + 0.5;
-      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
-      col = mix(vec3(l), col, saturation);
-      vec2 uv = vUv - 0.5;
-      col *= clamp(1.0 - vignette * dot(uv, uv), 0.0, 1.0);
-      gl_FragColor = vec4(col, c.a);
-    }`,
-});
-composer.addPass(gradePass);
+let composer = null;
+if (USE_POST) {
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.7, 0.82));
+  composer.addPass(new OutputPass());
+  if (USE_SMAA) composer.addPass(new SMAAPass(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio()));
+  // colour grade: gentle contrast + saturation + broadcast vignette, applied to
+  // the tone-mapped image. This is what pulls the Ardennes greens out of the wash.
+  composer.addPass(new ShaderPass({
+    uniforms: { tDiffuse: { value: null }, contrast: { value: 1.11 }, saturation: { value: 1.22 }, vignette: { value: 0.85 } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+    fragmentShader: `
+      uniform sampler2D tDiffuse; uniform float contrast, saturation, vignette; varying vec2 vUv;
+      void main(){
+        vec4 c = texture2D(tDiffuse, vUv); vec3 col = c.rgb;
+        col = (col - 0.5) * contrast + 0.5;
+        float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col = mix(vec3(l), col, saturation);
+        vec2 uv = vUv - 0.5;
+        col *= clamp(1.0 - vignette * dot(uv, uv), 0.0, 1.0);
+        gl_FragColor = vec4(col, c.a);
+      }`,
+  }));
+}
 
 // Image-based lighting: a gradient sky/ground env so the glossy car body
 // catches real sky reflections (and everything gets softer ambient fill)
-{
+if (USE_POST) {
   const pmrem = new THREE.PMREMGenerator(renderer);
   const es = new THREE.Scene();
   const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 24, 16), new THREE.ShaderMaterial({
@@ -233,18 +241,21 @@ composer.addPass(gradePass);
 // then draw it into a strip up top flipped left-right, like a real mirror
 // ---------------------------------------------------------------------------
 const RVW = 640, RVH = 180;
-const rearRT = new THREE.WebGLRenderTarget(RVW, RVH, { samples: 4 });
-rearRT.texture.colorSpace = THREE.SRGBColorSpace;
-const rearCam = new THREE.PerspectiveCamera(64, RVW / RVH, 0.3, 2200);
-const rvScene = new THREE.Scene();
-const rvCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 2); rvCam.position.z = 1;
-const rvQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2),
-  new THREE.MeshBasicMaterial({ map: rearRT.texture, depthTest: false, depthWrite: false, toneMapped: false }));
-{ const uv = rvQuad.geometry.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setX(i, 1 - uv.getX(i)); uv.needsUpdate = true; }  // flip U = mirror
-rvScene.add(rvQuad);
-let rearOn = true;
+let rearRT, rearCam, rvScene, rvCam, rearOn = true;
+if (USE_REAR) {
+  rearRT = new THREE.WebGLRenderTarget(RVW, RVH, { samples: 4 });
+  rearRT.texture.colorSpace = THREE.SRGBColorSpace;
+  rearCam = new THREE.PerspectiveCamera(64, RVW / RVH, 0.3, 2200);
+  rvScene = new THREE.Scene();
+  rvCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 2); rvCam.position.z = 1;
+  const rvQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2),
+    new THREE.MeshBasicMaterial({ map: rearRT.texture, depthTest: false, depthWrite: false, toneMapped: false }));
+  { const uv = rvQuad.geometry.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setX(i, 1 - uv.getX(i)); uv.needsUpdate = true; }  // flip U = mirror
+  rvScene.add(rvQuad);
+}
 const _rvEye = new THREE.Vector3(), _rvLook = new THREE.Vector3();
 function renderRearView() {
+  if (!USE_REAR) return;
   const el = document.getElementById('rearview');
   const show = rearOn && sess.mode !== 'menu' && !podiumActive && !state.pitFrozen
     && !(sess.mode === 'race' && sess.phase === 'lights');
@@ -2715,7 +2726,9 @@ function backToMenu() {
       if (seg.dataset.opt === 'laps') menu.laps = +btn.dataset.v;
       else if (seg.dataset.opt === 'qmin') menu.qmin = +btn.dataset.v;
       else if (seg.dataset.opt === 'start') menu.startGarage = btn.dataset.v === 'garage';
+      else if (seg.dataset.opt === 'quality' && btn.dataset.v !== QUALITY) { localStorage.setItem('ardennes.quality', btn.dataset.v); location.reload(); }
     })));
+  document.querySelector('#optQuality button[data-v="' + QUALITY + '"]')?.classList.add('on');   // reflect current quality
   $id('startBtn').addEventListener('click', () => startGame(menu.mode));
   $id('resultBtn').addEventListener('click', backToMenu);
 }
@@ -2959,7 +2972,7 @@ function frame() {
   updateSession(dt);
   drawMinimap();
 
-  composer.render();
+  if (composer) composer.render(); else renderer.render(scene, camera);
   renderRearView();
 }
 frame();
@@ -2973,5 +2986,5 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
-  composer.setSize(innerWidth, innerHeight);
+  if (composer) composer.setSize(innerWidth, innerHeight);
 });
