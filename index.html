@@ -42,6 +42,22 @@
   #cockpitVignette { position: fixed; inset: 0; pointer-events: none; display: none; z-index: 2;
     background: radial-gradient(ellipse 90% 75% at 50% 58%, transparent 52%, rgba(8,10,13,.45) 80%, rgba(4,5,7,.82) 100%); }
   body.cockpit #cockpitVignette { display: block; }
+
+  #settings { position: fixed; right: 24px; top: 235px; width: 250px; z-index: 3; display: none;
+    background: rgba(12,16,24,.92); border: 1px solid rgba(255,255,255,.12); border-radius: 10px;
+    color: #fff; font-size: 12px; padding: 12px 14px 14px; user-select: none; }
+  #settings.open { display: block; }
+  #settings .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  #settings .tabs button { flex: 1; background: rgba(255,255,255,.08); color: #fff; border: 0; padding: 6px 0;
+    border-radius: 6px; font-size: 11px; letter-spacing: 1.5px; font-weight: 700; cursor: pointer; }
+  #settings .tabs button.active { background: #e10600; }
+  #settings .row { margin: 9px 0 2px; }
+  #settings .row label { display: flex; justify-content: space-between; opacity: .8; margin-bottom: 3px; }
+  #settings .row .val { font-variant-numeric: tabular-nums; color: #ffd34d; }
+  #settings input[type=range] { width: 100%; accent-color: #e10600; }
+  #settings .reset { margin-top: 12px; width: 100%; background: rgba(255,255,255,.08); color: #fff; border: 0;
+    padding: 6px 0; border-radius: 6px; font-size: 11px; letter-spacing: 1px; cursor: pointer; }
+  #settings .hint { opacity: .45; margin-top: 8px; font-size: 10.5px; text-align: center; }
 </style>
 </head>
 <body>
@@ -72,7 +88,17 @@
   <div class="hud" id="offtrack">OFF TRACK — reduced grip</div>
   <canvas id="minimap" width="190" height="190"></canvas>
   <div class="hud" id="help">
-    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>M</b> mute
+    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>O</b> setup &nbsp; <b>M</b> mute
+  </div>
+  <div id="settings">
+    <div class="tabs">
+      <button id="tabWheel" class="active">WHEEL</button>
+      <button id="tabDriver">DRIVER</button>
+    </div>
+    <div id="paneWheel"></div>
+    <div id="paneDriver" style="display:none"></div>
+    <button class="reset" id="setupReset">RESET TO DEFAULTS</button>
+    <div class="hint">changes save automatically</div>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>

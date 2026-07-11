@@ -880,6 +880,9 @@ addEventListener('keydown', e => {
       camMode = (camMode + 1) % 3; // chase -> cockpit -> nose pod
       document.body.classList.toggle('cockpit', camMode >= 1);
       break;
+    case 'KeyO':
+      toggleSettings();
+      break;
     case 'KeyL': raceLine.visible = !raceLine.visible; break;
     case 'KeyH': car.userData.halo.visible = !car.userData.halo.visible; break;
     case 'KeyX':
@@ -1173,8 +1176,9 @@ gltfLoader.load('/wheel.glb', g => {
   for (const part of car.userData.wheelPrimitives) part.visible = false;
   wheelGroup.add(flip);
   // seat the wheel inside the cockpit close to the driver — clearly behind
-  // the halo strut so the two never overlap in cockpit view
-  wheelGroup.position.set(0, 0.76, 0.58);
+  // the halo strut so the two never overlap in cockpit view (user-tunable
+  // via the setup panel, key O)
+  applyWheelCfg();
   // seat the live LCD into the model's screen bezel: match the column rake,
   // shrink to the screen cutout, and drop the redundant procedural LEDs
   // (the model has its own baked light strip)
@@ -1184,6 +1188,61 @@ gltfLoader.load('/wheel.glb', g => {
   lcd.scale.set(0.62, 0.62, 1);
   for (const led of car.userData.leds) led.visible = false;
 }, undefined, () => {});
+
+// ---------- cockpit setup panel (key O): wheel XYZ + driver eye tuning ----------
+const CFG_DEF = { wx: 0, wy: 0.76, wz: 0.58, camBack: 0.10, camUp: 0.92, pitch: 0.12, fov: 66 };
+let cfg = { ...CFG_DEF };
+try { Object.assign(cfg, JSON.parse(localStorage.getItem('ardennes.cockpit') || '{}')); } catch { /* fresh defaults */ }
+function saveCfg() { localStorage.setItem('ardennes.cockpit', JSON.stringify(cfg)); }
+function applyWheelCfg() {
+  if (car.userData.imported) car.userData.steeringWheel.position.set(cfg.wx, cfg.wy, cfg.wz);
+}
+const SETUP_SLIDERS = [
+  ['paneWheel', 'wx', 'X — left / right', -0.15, 0.15, 0.005],
+  ['paneWheel', 'wy', 'Y — down / up', 0.55, 1.00, 0.005],
+  ['paneWheel', 'wz', 'Z — pull back / push in', 0.40, 0.95, 0.005],
+  ['paneDriver', 'camBack', 'Seat — into halo / back', -0.30, 0.40, 0.005],
+  ['paneDriver', 'camUp', 'Eye — lower / higher', 0.75, 1.15, 0.005],
+  ['paneDriver', 'pitch', 'View — down / up', -0.6, 0.8, 0.01],
+  ['paneDriver', 'fov', 'Field of view', 55, 85, 1],
+];
+{
+  const rows = [];
+  for (const [pane, key, label, min, max, step] of SETUP_SLIDERS) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label>${label}<span class="val"></span></label>`;
+    const input = document.createElement('input');
+    Object.assign(input, { type: 'range', min, max, step, value: cfg[key] });
+    const val = row.querySelector('.val');
+    const show = () => { val.textContent = key === 'fov' ? `${cfg[key]}°` : (+cfg[key]).toFixed(3); };
+    input.addEventListener('input', () => {
+      cfg[key] = +input.value;
+      saveCfg(); applyWheelCfg(); show();
+    });
+    input.addEventListener('pointerup', () => input.blur()); // keep arrows on the car
+    row.appendChild(input);
+    document.getElementById(pane).appendChild(row);
+    rows.push({ key, input, show });
+    show();
+  }
+  const setTab = wheel => {
+    document.getElementById('tabWheel').classList.toggle('active', wheel);
+    document.getElementById('tabDriver').classList.toggle('active', !wheel);
+    document.getElementById('paneWheel').style.display = wheel ? '' : 'none';
+    document.getElementById('paneDriver').style.display = wheel ? 'none' : '';
+  };
+  document.getElementById('tabWheel').addEventListener('click', () => setTab(true));
+  document.getElementById('tabDriver').addEventListener('click', () => setTab(false));
+  document.getElementById('setupReset').addEventListener('click', () => {
+    cfg = { ...CFG_DEF };
+    saveCfg(); applyWheelCfg();
+    for (const r of rows) { r.input.value = cfg[r.key]; r.show(); }
+  });
+}
+function toggleSettings() {
+  document.getElementById('settings').classList.toggle('open');
+}
 
 addEventListener('dragover', e => e.preventDefault());
 addEventListener('drop', e => {
@@ -1248,7 +1307,7 @@ function frame() {
   } else if (camMode === 1) {
     // cockpit: helmet-cam framing — close behind the wheel, pitched
     // slightly down so the wheel fills the lower half under the halo
-    target = new THREE.Vector3(state.x - fwdX * 0.10, info.y + 0.92, state.z - fwdZ * 0.10);
+    target = new THREE.Vector3(state.x - fwdX * cfg.camBack, info.y + cfg.camUp, state.z - fwdZ * cfg.camBack);
   } else {
     // nose pod: the higher over-cockpit view
     target = new THREE.Vector3(state.x - fwdX * 0.15, info.y + 1.26, state.z - fwdZ * 0.15);
@@ -1263,9 +1322,9 @@ function frame() {
   }
   camera.position.copy(camPos);
   // cockpit view looks dead level so the horizon sits mid-frame
-  const lookY = camMode === 1 ? 0.12 : 1.0; // cockpit pitches gently down toward the road
+  const lookY = camMode === 1 ? cfg.pitch : 1.0; // cockpit pitch is user-tunable
   camera.lookAt(state.x + fwdX * 14, info.y + lookY + slope * 14, state.z + fwdZ * 14);
-  camera.fov = (camMode === 0 ? 68 : camMode === 1 ? 66 : 82) + Math.min(speed * 0.12, 14);
+  camera.fov = (camMode === 0 ? 68 : camMode === 1 ? cfg.fov : 82) + Math.min(speed * 0.12, 14);
   camera.updateProjectionMatrix();
 
   // sun shadow follows car
