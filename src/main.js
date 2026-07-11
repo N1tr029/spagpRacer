@@ -1373,7 +1373,7 @@ function resetCar() {
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
-let started = false, muted = false, camMode = 0, assistsOn = true;
+let started = false, muted = false, camMode = 0, assistsOn = true, tvMode = false;
 addEventListener('keydown', e => {
   // while the start menu is up, only Enter launches the selected mode
   if (!started || sess.mode === 'menu') {
@@ -1389,6 +1389,10 @@ addEventListener('keydown', e => {
     case 'KeyC':
       camMode = (camMode + 1) % 3; // chase -> cockpit -> nose pod
       document.body.classList.toggle('cockpit', camMode >= 1);
+      break;
+    case 'KeyV':
+      tvMode = !tvMode;
+      flashLap(tvMode ? 'BROADCAST CAMERAS' : 'DRIVER CAMERA');
       break;
     case 'KeyO':
       toggleSettings();
@@ -2197,6 +2201,24 @@ function updatePitCrew(dt, now) {
   crewLollipop.userData.sign.material.color.setHex(releasing ? 0x1fbf3a : 0xf36a00);
 }
 
+// Trackside broadcast cameras: elevated, on the outside of corners, spread
+// around the lap. The TV/replay mode picks the nearest one and frames the car.
+const TV_CAMS = [];
+{
+  // dense enough that there is always a close camera (a distant one shoots
+  // through the forest); close to the track edge for a clean line to the car
+  const step = Math.max(1, Math.floor(N / 48));
+  for (let i = 0; i < N; i += step) {
+    const p = P(i), n = normals[i];
+    const side = Math.abs(CURV[i]) > 1e-4 ? -Math.sign(CURV[i]) : (i % 2 ? 1 : -1);
+    const off = 13 + (i % 4) * 2;
+    const cx = p[0] + n[0] * side * off, cz = p[2] + n[1] * side * off;
+    // above the real ground here (track height buries cams on the hills), floored
+    // at track+7 so a dip below the track can't put it underground
+    TV_CAMS.push(new THREE.Vector3(cx, Math.max(terrainHeight(cx, cz), p[1]) + 8, cz));
+  }
+}
+
 const fmtShort = ms => !isFinite(ms) ? '—'
   : `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${Math.floor((ms % 1000) / 100)}`;
 const $id = id => document.getElementById(id);
@@ -2403,7 +2425,7 @@ function startGame(mode) {
   updateModeBar();
 }
 function backToMenu() {
-  sess.mode = 'menu'; sess.running = false;
+  sess.mode = 'menu'; sess.running = false; tvMode = false;
   rivalsGroup.visible = false; showTower(false);
   $id('results').classList.remove('show');
   $id('title').style.display = 'flex';
@@ -2523,7 +2545,7 @@ function frame() {
   camera.fov = (camMode === 0 ? 68 : camMode === 1 ? cfg.fov : 82) + Math.min(speed * 0.12, 14);
   camera.updateProjectionMatrix();
 
-  // pit-stop cutscene: swing the camera to a side angle on the car + crew
+  // cinematic camera overrides: pit stop, race-start grid intro, TV/replay
   if (state.pitFrozen) {
     car.updateMatrixWorld(true);
     const c = new THREE.Vector3(6.2, 2.4, 3.4).applyMatrix4(car.matrixWorld);
@@ -2531,6 +2553,21 @@ function frame() {
     camera.position.copy(camPos);
     camera.lookAt(car.position.x, car.position.y + 0.7, car.position.z);
     camera.fov = 46; camera.updateProjectionMatrix();
+  } else if (sess.mode === 'race' && sess.phase === 'lights') {
+    // grid intro: slow low orbit around the car while the lights build
+    const a = sess.lightT * 0.5 + 1.4, R = 11;
+    camPos.lerp(new THREE.Vector3(state.x + Math.sin(a) * R, info.y + 2.7, state.z + Math.cos(a) * R), 1 - Math.exp(-dt * 4));
+    camera.position.copy(camPos);
+    camera.lookAt(state.x, info.y + 0.6, state.z);
+    camera.fov = 38; camera.updateProjectionMatrix();
+  } else if (tvMode) {
+    // nearest trackside camera, framing the car with a long lens when far
+    let best = TV_CAMS[0], bd = 1e18;
+    for (const cpos of TV_CAMS) { const d = cpos.distanceToSquared(car.position); if (d < bd) { bd = d; best = cpos; } }
+    camera.position.copy(best);
+    camera.lookAt(car.position.x, car.position.y + 0.5, car.position.z);
+    camera.fov = Math.max(14, Math.min(40, 1600 / Math.max(20, Math.sqrt(bd))));
+    camera.updateProjectionMatrix();
   }
 
   // sun shadow follows car
@@ -2616,7 +2653,7 @@ frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {
