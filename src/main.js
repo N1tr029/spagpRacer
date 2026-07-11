@@ -15,6 +15,9 @@ import forestData from './forest.json';
 // from a domain root or a subpath (e.g. GitHub Pages /spagpRacer/)
 const ASSET = import.meta.env.BASE_URL;
 
+// touch device? drives the on-screen controls + a lighter render for phones
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+
 // real OSM forest extent around Spa (landuse=forest), rasterised to a grid in
 // game coordinates — trees only grow where there's actually forest, so La Source
 // and the pit straight stay open while Kemmel/Blanchimont are tree-lined
@@ -151,7 +154,7 @@ function pitInfo(x, z, hintK) {
 // Renderer / scene
 // ---------------------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.3 : 2));   // fewer pixels on phones
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;   // softer, less aliased contact shadows
@@ -2664,6 +2667,7 @@ function placeInGarage() {
 function startGame(mode) {
   $id('title').style.display = 'none';
   $id('results').classList.remove('show');
+  document.body.classList.add('driving');   // reveal the touch controls
   if (!started) { started = true; initAudio(); }
   if (mode === 'practice') {
     sess.mode = 'practice'; sess.running = false;
@@ -2691,6 +2695,7 @@ function backToMenu() {
   rivalsGroup.visible = false; showTower(false);
   $id('results').classList.remove('show');
   $id('title').style.display = 'flex';
+  document.body.classList.remove('driving');   // hide the touch controls on the menu
   state.idx = 0; resetCar(); clearPlayerLaps();
   $id('modebar').textContent = '';
   $id('startlights').classList.remove('show', 'go');
@@ -2713,6 +2718,31 @@ function backToMenu() {
     })));
   $id('startBtn').addEventListener('click', () => startGame(menu.mode));
   $id('resultBtn').addEventListener('click', backToMenu);
+}
+
+// on-screen touch controls for phones: steering, pedals, DRS/ERS, reset, menu
+if (IS_TOUCH) document.body.classList.add('touch');
+{
+  const hold = (id, on, off) => {
+    const el = $id(id); if (!el) return;
+    el.addEventListener('pointerdown', e => { e.preventDefault(); try { el.setPointerCapture(e.pointerId); } catch (_) {} el.classList.add('active'); on(); });
+    const end = () => { el.classList.remove('active'); off(); };
+    el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end); el.addEventListener('lostpointercapture', end);
+  };
+  const tap = (id, fn) => {
+    const el = $id(id); if (!el) return;
+    el.addEventListener('pointerdown', e => { e.preventDefault(); el.classList.add('active'); fn(); });
+    const end = () => el.classList.remove('active');
+    el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+  };
+  hold('tcLeft', () => (input.left = true), () => (input.left = false));
+  hold('tcRight', () => (input.right = true), () => (input.right = false));
+  hold('tcGas', () => (input.throttle = 1), () => (input.throttle = 0));
+  hold('tcBrake', () => (input.brake = 1), () => (input.brake = 0));
+  hold('tcErs', () => (input.overtake = true), () => (input.overtake = false));
+  tap('tcDrs', () => (input.drsWant = true));
+  tap('tcReset', () => resetCar());
+  tap('tcMenu', () => backToMenu());
 }
 
 // ---------------------------------------------------------------------------

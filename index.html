@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>Ardennes GP — Spa-Francorchamps Time Trial</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0d12; font-family: "Helvetica Neue", Arial, sans-serif; }
@@ -60,6 +60,32 @@
     opacity: .45; line-height: 1.6; padding: 0 20px; pointer-events: auto; }
   #credits a { color: #9cc4ff; text-decoration: none; }
   #credits a:hover { text-decoration: underline; }
+
+  /* --- mobile / touch controls (shown only on touch devices while driving) --- */
+  #touchctl { position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none; }
+  body.touch.driving #touchctl { display: block; }
+  .tc { position: absolute; pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 800; letter-spacing: 1px; text-shadow: 0 1px 2px #000;
+    background: rgba(18,22,30,.4); border: 2px solid rgba(255,255,255,.26); border-radius: 16px; }
+  .tc.active { background: rgba(225,6,0,.55); border-color: #ff6650; }
+  .tc.steer { width: 78px; height: 96px; bottom: 22px; font-size: 46px; padding-bottom: 6px; }
+  #tcLeft { left: 16px; } #tcRight { left: 102px; }
+  .tc.brake { width: 92px; height: 96px; bottom: 22px; right: 124px; font-size: 15px; background: rgba(70,22,22,.42); }
+  .tc.brake.active { background: rgba(230,60,40,.6); border-color: #ff8a70; }
+  .tc.gas { width: 104px; height: 118px; bottom: 22px; right: 14px; font-size: 17px; background: rgba(22,58,28,.44); }
+  .tc.gas.active { background: rgba(40,200,90,.6); border-color: #77ff99; }
+  .tc.mini { width: 70px; height: 50px; font-size: 14px; }
+  #tcDrs { bottom: 148px; right: 14px; } #tcErs { bottom: 148px; right: 92px; }
+  .tc.small { width: 74px; height: 36px; font-size: 12px; bottom: 26px; opacity: .82; }
+  #tcMenu { left: 50%; transform: translateX(-50%); }
+  #tcReset { left: 50%; transform: translateX(calc(-50% - 84px)); }
+  body.touch #help, body.touch #mfd, body.touch #tirebox { display: none; }   /* declutter the phone HUD */
+  body.touch #speedo { bottom: 220px; right: 20px; }                          /* lift the readout above the pedals */
+  #rotate { position: fixed; inset: 0; z-index: 30; display: none; background: #0a0d12; color: #fff;
+    align-items: center; justify-content: center; text-align: center; font-size: 19px; font-weight: 700;
+    letter-spacing: 1px; line-height: 1.6; padding: 30px; }
+  @media (orientation: portrait) { body.touch #rotate { display: flex; } }
 
   #results { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column;
     background: rgba(6,9,14,.78); z-index: 11; color: #fff; text-align: center; }
@@ -298,6 +324,17 @@
     <div id="paneDriver" style="display:none"></div>
     <button class="reset" id="setupReset">RESET TO DEFAULTS</button>
     <div class="hint">changes save automatically</div>
+  </div>
+  <div id="rotate"><div><div style="font-size:44px">&#8635;</div>Rotate your phone to landscape to race</div></div>
+  <div id="touchctl">
+    <div class="tc steer" id="tcLeft">‹</div>
+    <div class="tc steer" id="tcRight">›</div>
+    <div class="tc mini" id="tcErs">ERS</div>
+    <div class="tc mini" id="tcDrs">DRS</div>
+    <div class="tc brake" id="tcBrake">BRAKE</div>
+    <div class="tc gas" id="tcGas">GAS</div>
+    <div class="tc small" id="tcReset">RESET</div>
+    <div class="tc small" id="tcMenu">MENU</div>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>
