@@ -2151,6 +2151,7 @@ function makeCrewman(color, gun) {
     const wg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.05, 0.55, 8), new THREE.MeshStandardMaterial({ color: 0xffb400, roughness: 0.5, metalness: 0.4 }));
     wg.rotation.x = Math.PI / 2; wg.position.set(0, 0.95, 0.42); g.add(wg); g.userData.gun = wg;
   }
+  g.userData.suit = suit;   // exposed so podium figures can be recoloured per team
   g.traverse(o => { if (o.isMesh) o.castShadow = true; });
   return g;
 }
@@ -2217,6 +2218,67 @@ const TV_CAMS = [];
     // at track+7 so a dip below the track can't put it underground
     TV_CAMS.push(new THREE.Vector3(cx, Math.max(terrainHeight(cx, cz), p[1]) + 8, cz));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Podium — post-race ceremony beside the start/finish line
+// ---------------------------------------------------------------------------
+const podium = new THREE.Group(); podium.visible = false; scene.add(podium);
+const podiumFigs = [], podiumTrophies = [];
+let confetti, podiumActive = false, podiumT = 0;
+const PODIUM_SLOTS = [[0, 1.7], [2.2, 1.3], [-2.2, 1.0]];   // [x, height] for P1 (centre), P2 (left), P3 (right)
+{
+  const tierMat = new THREE.MeshStandardMaterial({ color: 0xe2e4ea, roughness: 0.7 });
+  for (const [tx, h] of PODIUM_SLOTS) {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(2.0, h, 1.6), tierMat);
+    box.position.set(tx, h / 2, 0); box.castShadow = true; box.receiveShadow = true; podium.add(box);
+  }
+  const board = new THREE.Mesh(new THREE.BoxGeometry(8.2, 2.7, 0.2), new THREE.MeshStandardMaterial({ color: 0x0b1220, roughness: 0.8 }));
+  board.position.set(0, 2.75, 1.3); podium.add(board);
+  const strip = new THREE.Mesh(new THREE.BoxGeometry(8.2, 0.45, 0.22), new THREE.MeshStandardMaterial({ color: 0xe10600 }));
+  strip.position.set(0, 3.95, 1.29); podium.add(strip);
+  for (let k = 0; k < 3; k++) {
+    const fig = makeCrewman(0xffffff, 0); podium.add(fig); podiumFigs.push(fig);
+    const tr = new THREE.Group();
+    const gold = new THREE.MeshStandardMaterial({ color: 0xffd34d, metalness: 0.7, roughness: 0.3 });
+    const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.09, 0.34, 12), gold); cup.position.y = 0.28; tr.add(cup);
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.14, 8), gold); stem.position.y = 0.06; tr.add(stem);
+    tr.visible = false; podium.add(tr); podiumTrophies.push(tr);
+  }
+  const CN = 320, pos = new Float32Array(CN * 3), col = new Float32Array(CN * 3);
+  const cc = [[0.92, 0.12, 0.12], [0.12, 0.42, 0.92], [0.96, 0.82, 0.12], [0.12, 0.82, 0.32], [0.95, 0.95, 0.95]];
+  for (let i = 0; i < CN; i++) {
+    pos[i * 3] = (Math.random() - 0.5) * 10; pos[i * 3 + 1] = Math.random() * 8; pos[i * 3 + 2] = (Math.random() - 0.5) * 5;
+    const c = cc[i % cc.length]; col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
+  }
+  const cg = new THREE.BufferGeometry();
+  cg.setAttribute('position', new THREE.BufferAttribute(pos, 3)); cg.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  confetti = new THREE.Points(cg, new THREE.PointsMaterial({ size: 0.18, vertexColors: true }));
+  podium.add(confetti);
+  const gp = poseAtGrid(34, 0), n = normals[gp.idx];
+  const px = gp.x + n[0] * 13, pz = gp.z + n[1] * 13;
+  podium.position.set(px, trackInfo(px, pz, gp.idx).y, pz);
+  podium.rotation.y = Math.atan2(n[0], n[1]);   // figures face the track (-normal), board behind them
+  podium.userData.toTrack = new THREE.Vector3(-n[0], 0, -n[1]);   // camera sits on the track side
+}
+function showPodium(top3) {
+  for (let k = 0; k < 3; k++) {
+    const [x, h] = PODIUM_SLOTS[k], fig = podiumFigs[k], tr = podiumTrophies[k];
+    fig.position.set(x, h, 0); fig.rotation.y = Math.PI;
+    fig.userData.suit.color.setHex(top3[k] ? top3[k].color : 0x888888);
+    tr.position.set(x + 0.32, h + 0.9, 0.2); tr.visible = !!top3[k]; tr.scale.setScalar(k === 0 ? 1.5 : 1);
+  }
+  podium.visible = true; podiumActive = true; podiumT = 0;
+}
+function updateConfetti(dt) {
+  if (!podiumActive) return;
+  const p = confetti.geometry.attributes.position, a = p.array;
+  for (let i = 0; i < a.length; i += 3) {
+    a[i + 1] -= (1.2 + (i % 7) * 0.15) * dt;
+    a[i] += Math.sin(podiumT * 2 + i) * 0.004;
+    if (a[i + 1] < 0) a[i + 1] = 8;
+  }
+  p.needsUpdate = true;
 }
 
 const fmtShort = ms => !isFinite(ms) ? '—'
@@ -2297,14 +2359,16 @@ function endQuali() {
 }
 function endRace() {
   sess.running = false;
-  const order = rivals.map(r => ({ name: r.def.full || r.def.name, dist: rivalDist(r), you: false }))
-    .concat([{ name: 'YOU', dist: playerDist() - state.penalty * 68, you: true }])   // time penalty in the classification
+  const order = rivals.map(r => ({ name: r.def.full || r.def.name, color: r.def.color, dist: rivalDist(r), you: false }))
+    .concat([{ name: 'YOU', color: 0xf36a00, dist: playerDist() - state.penalty * 68, you: true }])   // time penalty in the classification
     .sort((a, b) => b.dist - a.dist);
   const pos = order.findIndex(e => e.you) + 1;
   $id('resultPos').textContent = 'P' + pos;
   $id('resultGrid').innerHTML = order.map((e, i) =>
     `<div class="r${e.you ? ' you' : ''}"><span class="p">P${i + 1}</span><span class="n">${e.name}${e.you && state.penalty > 0 ? ` <small style="opacity:.7">(+${state.penalty}s)</small>` : ''}</span></div>`).join('');
-  $id('results').classList.add('show');
+  // podium ceremony plays first, then the full classification appears over it
+  showPodium(order.slice(0, 3));
+  setTimeout(() => $id('results').classList.add('show'), 4200);
 }
 
 function updateModeBar() {
@@ -2426,6 +2490,7 @@ function startGame(mode) {
 }
 function backToMenu() {
   sess.mode = 'menu'; sess.running = false; tvMode = false;
+  podiumActive = false; podium.visible = false;
   rivalsGroup.visible = false; showTower(false);
   $id('results').classList.remove('show');
   $id('title').style.display = 'flex';
@@ -2545,8 +2610,14 @@ function frame() {
   camera.fov = (camMode === 0 ? 68 : camMode === 1 ? cfg.fov : 82) + Math.min(speed * 0.12, 14);
   camera.updateProjectionMatrix();
 
-  // cinematic camera overrides: pit stop, race-start grid intro, TV/replay
-  if (state.pitFrozen) {
+  // cinematic camera overrides: podium, pit stop, race-start grid intro, TV/replay
+  if (podiumActive) {
+    podiumT += dt;
+    const tt = podium.userData.toTrack, sway = Math.sin(podiumT * 0.35) * 2;
+    camera.position.set(podium.position.x + tt.x * 13 - tt.z * sway, podium.position.y + 5.0, podium.position.z + tt.z * 13 + tt.x * sway);
+    camera.lookAt(podium.position.x, podium.position.y + 2.2, podium.position.z);
+    camera.fov = 40; camera.updateProjectionMatrix();
+  } else if (state.pitFrozen) {
     car.updateMatrixWorld(true);
     const c = new THREE.Vector3(6.2, 2.4, 3.4).applyMatrix4(car.matrixWorld);
     camPos.lerp(c, 1 - Math.exp(-dt * 5));
@@ -2644,6 +2715,7 @@ function frame() {
   updateAudio(rpmFrac, input.throttle, speed);
   updatePitStop(dt);
   updatePitCrew(dt, now);
+  updateConfetti(dt);
   updateSession(dt);
   drawMinimap();
 
@@ -2653,7 +2725,7 @@ frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, showPodium, podium, endRace, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {
