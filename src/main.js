@@ -668,6 +668,7 @@ const state = {
 };
 
 const MASS = 800, POWER = 690000, MU = 1.75, DFK = 0.0062, CDA = 1.45;
+const COLL_R = 2.6; // car-to-car contact radius (m)
 // bicycle-model parameters: yaw inertia, CG position/height, axle cornering stiffness
 const IZ = 1050, CG_A = 1.8, CG_B = 1.6, WHEELBASE = 3.4, CG_H = 0.32;
 const CA_F = 2.1e5, CA_R = 2.5e5; // N/rad before saturation
@@ -831,6 +832,23 @@ function physCore(dt) {
     s.vx -= n[0] * vn * 1.4; s.vz -= n[1] * vn * 1.4;
     // scrape speed off instead of dead-stopping, so you can drive away from a wall
     s.vx *= 0.96; s.vz *= 0.96;
+  }
+
+  // car-to-car contact: rivals are kinematic pace-setters, so a touch shoves
+  // the player aside and scrubs speed — a clumsy move gets punished
+  if (sess.mode === 'race' && sess.phase === 'racing') {
+    for (const r of rivals) {
+      const rp = r.mesh.position;
+      let dx = s.x - rp.x, dz = s.z - rp.z;
+      const d = Math.hypot(dx, dz);
+      if (d < COLL_R && d > 1e-4) {
+        const push = COLL_R - d; dx /= d; dz /= d;
+        s.x += dx * push; s.z += dz * push;
+        const vn = s.vx * dx + s.vz * dz;
+        if (vn < 0) { s.vx -= dx * vn * 1.7; s.vz -= dz * vn * 1.7; }
+        s.vx *= 0.9; s.vz *= 0.9;
+      }
+    }
   }
 
   // lap timing via progress
@@ -1328,14 +1346,88 @@ const rivals = RIVALS_DEF.map((def) => {
   rivalsGroup.add(mesh);
   return { def, mesh, u: 0 };
 });
+const GRID_BLEND = 4.5; // seconds to merge from grid box onto the racing line
 function placeRival(r) {
   const f = (((r.u % 1) + 1) % 1) * N;
   const i0 = Math.floor(f) % N, i1 = (i0 + 1) % N, frac = f - Math.floor(f);
-  const a = P(i0), b = P(i1), n = normals[i0], lat = RACE[i0];
+  const a = P(i0), b = P(i1), n = normals[i0];
+  let lat = RACE[i0];
+  // hold the grid-box offset through the start, then blend onto the line
+  if (sess.mode === 'race' && r.gridLat != null && sess.raceElapsed < GRID_BLEND) {
+    const k = Math.max(0, sess.raceElapsed) / GRID_BLEND;
+    lat = r.gridLat * (1 - k) + RACE[i0] * k;
+  }
   const cx = a[0] + (b[0] - a[0]) * frac + n[0] * lat;
   const cz = a[2] + (b[2] - a[2]) * frac + n[1] * lat;
   r.mesh.position.set(cx, trackInfo(cx, cz, i0).y, cz);
   r.mesh.rotation.y = Math.atan2(b[0] - a[0], b[2] - a[2]);
+}
+// world pose at a given progress (m) and lateral offset (m, + = left)
+function poseAtGrid(prog, lat) {
+  const f = (((prog / STEP) % N) + N) % N;
+  const i0 = Math.floor(f) % N, i1 = (i0 + 1) % N, frac = f - Math.floor(f);
+  const a = P(i0), b = P(i1), n = normals[i0];
+  const x = a[0] + (b[0] - a[0]) * frac + n[0] * lat;
+  const z = a[2] + (b[2] - a[2]) * frac + n[1] * lat;
+  return { x, z, heading: Math.atan2(b[0] - a[0], b[2] - a[2]), idx: i0 };
+}
+const FIELD_N = RIVALS_DEF.length + 1;
+const gridProgOf = slot => TRACK_LEN - 12 - slot * 8;   // pole nearest the line
+const gridLatOf = slot => (slot % 2 === 0 ? -1 : 1) * 2.7; // 2-wide stagger
+
+// painted grid-box markings, built once at the fixed grid positions
+const gridBoxes = new THREE.Group();
+gridBoxes.visible = false;
+scene.add(gridBoxes);
+{
+  const cv = document.createElement('canvas'); cv.width = 64; cv.height = 140;
+  const g2 = cv.getContext('2d');
+  g2.strokeStyle = 'rgba(255,255,255,0.92)'; g2.lineWidth = 6;
+  g2.strokeRect(5, 5, 54, 100);                       // start box
+  g2.fillStyle = 'rgba(255,255,255,0.92)'; g2.fillRect(26, 108, 12, 26); // stub line
+  const tex = new THREE.CanvasTexture(cv);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+  const geo = new THREE.PlaneGeometry(2.4, 6.0);
+  for (let slot = 0; slot < FIELD_N; slot++) {
+    const p = poseAtGrid(gridProgOf(slot), gridLatOf(slot));
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.x = -Math.PI / 2; m.rotation.z = -p.heading;
+    m.position.set(p.x, trackInfo(p.x, p.z, p.idx).y + 0.02, p.z);
+    gridBoxes.add(m);
+  }
+}
+
+// start-light gantry over the line, a few metres ahead of pole
+const startLights = new THREE.Group();
+startLights.visible = false;
+scene.add(startLights);
+const startLightBulbs = [];
+{
+  const gp = poseAtGrid(5, 0);
+  const gy = trackInfo(gp.x, gp.z, gp.idx).y;
+  const dark = new THREE.MeshStandardMaterial({ color: 0x111214, roughness: 0.7 });
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(11, 0.7, 0.5), dark);
+  bar.position.set(0, 6.2, 0); startLights.add(bar);
+  for (const sx of [-5.4, 5.4]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.35, 6.4, 0.35), dark);
+    post.position.set(sx, 3.1, 0); startLights.add(post);
+  }
+  const bulbGeo = new THREE.CircleGeometry(0.42, 20);
+  for (let i = 0; i < 5; i++) {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x2a0000, emissive: 0x000000 });
+    const bulb = new THREE.Mesh(bulbGeo, mat);
+    bulb.position.set(-3.6 + i * 1.8, 6.2, 0.28);
+    startLights.add(bulb); startLightBulbs.push(mat);
+  }
+  startLights.position.set(gp.x, gy, gp.z);
+  startLights.rotation.y = gp.heading;
+}
+function updateStartLights(lit, allOff) {
+  for (let i = 0; i < 5; i++) {
+    const on = !allOff && i < lit;
+    startLightBulbs[i].color.setHex(on ? 0xff2200 : 0x2a0000);
+    startLightBulbs[i].emissive.setHex(on ? 0xff1500 : 0x000000);
+  }
 }
 
 const fmtShort = ms => !isFinite(ms) ? '—'
@@ -1347,7 +1439,9 @@ const idxAtProg = m => ((Math.round(m / STEP) % N) + N) % N;
 const menu = { mode: 'race', laps: 5, qmin: 5 };
 const sess = { mode: 'menu', running: false, timeLeft: 0, laps: 5 };
 
-const playerDist = () => state.lap * TRACK_LEN + state.prog;
+// race distance measured from the start line (negative while on the grid,
+// which sits behind the line — so grid order and lap counting line up)
+const playerDist = () => state.lap * TRACK_LEN + state.prog - TRACK_LEN;
 const rivalDist = r => r.u * TRACK_LEN;
 const playerRacePos = () => rivals.filter(r => rivalDist(r) > playerDist()).length + 1;
 
@@ -1359,22 +1453,31 @@ function showTower(on) { $id('tower').classList.toggle('show', on); }
 
 function startRace(playerGrid) {
   sess.mode = 'race'; sess.running = true; sess.laps = menu.laps;
+  sess.phase = 'lights'; sess.lightT = 0; sess.lights = 0;
+  sess.hold = 0.7 + Math.random() * 1.6;      // suspense before lights out
+  sess.raceElapsed = -1e9;                     // frozen on the grid until GO
   rivalsGroup.visible = true; showTower(true);
+  gridBoxes.visible = true; startLights.visible = true;
+  updateStartLights(0, false);
   // pole = fastest; player slots in at playerGrid (default: the back)
   const order = rivals.slice().sort((a, b) => a.def.lap - b.def.lap);
   const pg = playerGrid != null ? playerGrid : rivals.length;
   const field = [];
   let ri = 0;
   for (let slot = 0; slot <= rivals.length; slot++) field.push(slot === pg ? 'player' : order[ri++]);
-  const FIELD = field.length;
   field.forEach((ent, slot) => {
-    const gridProg = (FIELD - 1 - slot) * 7 + 6; // metres up the road; pole furthest
+    const gp = gridProgOf(slot), lat = gridLatOf(slot);
     if (ent === 'player') {
-      state.idx = idxAtProg(gridProg); resetCar();
-      clearPlayerLaps(); state.prog = gridProg;
-    } else { ent.u = gridProg / TRACK_LEN; placeRival(ent); }
+      const p = poseAtGrid(gp, lat);
+      state.x = p.x; state.z = p.z; state.heading = p.heading; state.idx = p.idx;
+      state.vx = state.vz = 0; state.steer = 0;
+      state.r = 0; state.thr = 0; state.brk = 0; state.ax = 0; state.axSm = 0;
+      clearPlayerLaps(); state.prog = gp;
+    } else {
+      ent.u = gp / TRACK_LEN - 1; ent.gridLat = lat; placeRival(ent);
+    }
   });
-  flashLap(`RACE — ${menu.laps} laps — GO!`);
+  flashLap(`RACE — ${menu.laps} laps — lights out and away we go`);
   updateModeBar(); updateTower();
 }
 
@@ -1407,7 +1510,8 @@ function updateModeBar() {
     const t = Math.max(0, sess.timeLeft);
     el.innerHTML = `<span class="q">QUALIFYING</span><span class="clock">${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}</span>`;
   } else if (sess.mode === 'race') {
-    const lap = Math.min(state.lap + 1, sess.laps);
+    if (sess.phase === 'lights') { el.innerHTML = `<span class="q">RACE</span><span class="clock">GET READY</span>`; return; }
+    const lap = Math.min(Math.max(state.lap, 1), sess.laps);
     el.innerHTML = `<span class="q">RACE</span><span class="clock">LAP ${lap}/${sess.laps} · P${playerRacePos()}</span>`;
   }
 }
@@ -1434,14 +1538,28 @@ function updateTower() {
 }
 function updateSession(dt) {
   if (sess.mode === 'menu') return;
-  if (sess.running && sess.mode !== 'practice') {
-    for (const r of rivals) { r.u += dt / r.def.lap; placeRival(r); }
-    if (sess.mode === 'quali') {
-      sess.timeLeft -= dt;
-      if (sess.timeLeft <= 0) { sess.timeLeft = 0; endQuali(); }
-    } else if (sess.mode === 'race' && state.lap >= sess.laps) {
-      endRace(); sess.running = false;
+  if (sess.mode === 'race') {
+    if (sess.phase === 'lights') {
+      sess.lightT += dt;
+      sess.lights = Math.min(5, Math.floor(sess.lightT)); // one red light per second
+      updateStartLights(sess.lights, false);
+      if (sess.lightT >= 5 + sess.hold) {          // all five held, then out
+        sess.phase = 'racing'; sess.raceElapsed = 0;
+        updateStartLights(0, true); startLights.visible = false;
+        flashLap('GO GO GO!');
+      }
+    } else if (sess.running) {
+      sess.raceElapsed += dt;
+      for (const r of rivals) { r.u += dt / r.def.lap; placeRival(r); }
+      if (playerDist() >= sess.laps * TRACK_LEN) { endRace(); sess.running = false; gridBoxes.visible = false; }
     }
+    updateModeBar(); updateTower();
+    return;
+  }
+  if (sess.running) {  // quali
+    for (const r of rivals) { r.u += dt / r.def.lap; placeRival(r); }
+    sess.timeLeft -= dt;
+    if (sess.timeLeft <= 0) { sess.timeLeft = 0; endQuali(); }
   }
   updateModeBar();
   if (sess.mode !== 'practice') updateTower();
@@ -1508,6 +1626,11 @@ function frame() {
   let dt = Math.min((now - lastT) / 1000, 0.1);
   lastT = now;
 
+  // hold the car on the grid until the lights go out
+  if (sess.mode === 'race' && sess.phase === 'lights') {
+    input.throttle = 0; input.brake = 0;
+    state.vx = 0; state.vz = 0; state.thr = 0; state.r = 0;
+  }
   if (started) {
     acc += dt;
     while (acc >= FIXED) { physStep(FIXED); acc -= FIXED; }
