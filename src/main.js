@@ -2,6 +2,11 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import trackData from './track.json';
 import forestData from './forest.json';
 
@@ -144,9 +149,9 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffe
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;   // softer, less aliased contact shadows
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMappingExposure = 1.06;                // a touch darker; bloom adds the glow back
 const app = document.getElementById('app');
 app.innerHTML = ''; // drop any canvas from a previous module instance (HMR)
 app.appendChild(renderer.domElement);
@@ -161,15 +166,42 @@ const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.3, 60
 
 const hemi = new THREE.HemisphereLight(0xd8e8ff, 0x42603a, 1.05);
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xffe9c4, 2.0);
+const sun = new THREE.DirectionalLight(0xffe7bd, 2.15);
 sun.position.set(-350, 500, 200);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 50; sun.shadow.camera.far = 1400;
+sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.6;   // kill shadow acne / peter-panning
 const sc = 120;
 sun.shadow.camera.left = -sc; sun.shadow.camera.right = sc;
 sun.shadow.camera.top = sc; sun.shadow.camera.bottom = -sc;
 scene.add(sun); scene.add(sun.target);
+
+// Post-processing: a filmic bloom for sky/sun/kerb glow, then tone-map + sRGB.
+// A soft depth-vignette darkens the frame edges the way a broadcast lens does.
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.7, 0.82);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+// colour grade: gentle contrast + saturation + broadcast vignette, applied to
+// the tone-mapped image. This is what pulls the Ardennes greens out of the wash.
+const gradePass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, contrast: { value: 1.11 }, saturation: { value: 1.22 }, vignette: { value: 0.85 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float contrast, saturation, vignette; varying vec2 vUv;
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv); vec3 col = c.rgb;
+      col = (col - 0.5) * contrast + 0.5;
+      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(l), col, saturation);
+      vec2 uv = vUv - 0.5;
+      col *= clamp(1.0 - vignette * dot(uv, uv), 0.0, 1.0);
+      gl_FragColor = vec4(col, c.a);
+    }`,
+});
+composer.addPass(gradePass);
 
 // ---------------------------------------------------------------------------
 // Track surface mesh
@@ -2719,17 +2751,18 @@ function frame() {
   updateSession(dt);
   drawMinimap();
 
-  renderer.render(scene, camera);
+  composer.render();
 }
 frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, showPodium, podium, endRace, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, showPodium, podium, endRace, composer, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
 });
