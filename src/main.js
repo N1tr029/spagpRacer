@@ -998,6 +998,10 @@ const state = {
   sec: 0, secStart: 0, secLap: [null, null, null], secBest: [null, null, null], secCol: ['', '', ''],
   // ERS (battery 0..1) + deploy state, DRS availability/open state
   ers: 0.7, ersMode: 1, ersDeploy: false, ersOT: false, drsAvail: false, drsOpen: false, drsAnn: false,
+  // tyre temps (FL,FR,RL,RR °C), fuel (kg), engine mix (0 lean/1 std/2 rich),
+  // brake bias (front fraction), and flag / penalty state
+  tireTemp: [90, 90, 88, 88], fuel: 100, fuelMix: 1, brakeBias: 0.62,
+  lapInvalid: false, trackStrikes: 0, penalty: 0, blueFlag: false, offTimer: 0,
 };
 
 const MASS = 800, POWER = 690000, MU = 1.75, DFK = 0.0062, CDA = 1.45;
@@ -1124,6 +1128,44 @@ function updateCarSystems(dt) {
   s.drsAvail = allowed;
   if (input.drsWant && allowed && onThrottle && !braking && speed > 20) s.drsOpen = true;
   if (braking || !inZone || speed < 18) { s.drsOpen = false; if (braking || !inZone) input.drsWant = false; }
+
+  // --- tyre temperatures (FL, FR, RL, RR): a target temp from the workload,
+  //     eased toward. Fronts take braking heat, rears traction; the outer tyre
+  //     in a corner loads up hottest. Warm tyres → optimal grip (state.tempGrip)
+  const tt = s.tireTemp, corner = Math.abs(s.r) * speed;
+  for (let i = 0; i < 4; i++) {
+    const front = i < 2, left = i % 2 === 0;
+    const outer = (s.steer > 0.05 && !left) || (s.steer < -0.05 && left) ? 1 : 0.45;
+    const target = 55 + speed * 0.35 + Math.min(45, corner * 22) * outer
+      + (front ? s.brk * 22 : s.thr * 14) + (onTrackState ? 0 : 18);
+    tt[i] += (Math.min(150, target) - tt[i]) * Math.min(1, dt * (0.35 + speed * 0.01));
+  }
+  const avgT = (tt[0] + tt[1] + tt[2] + tt[3]) / 4;
+  s.tempGrip = Math.max(0.93, 1 - 1e-4 * (avgT - 100) ** 2);   // cold/hot tyres lose a little grip
+
+  // --- fuel burn (telemetry): more on throttle / when deploying ---
+  if (speed > 1) s.fuel = Math.max(0, s.fuel - (0.006 + s.thr * 0.02 + (s.ersDeploy ? 0.004 : 0)) * dt);
+
+  // --- flags: blue when a car a lap (or more) ahead overall is right behind
+  //     you on the circuit, about to come past ---
+  s.blueFlag = false;
+  if (sess.mode === 'race' && sess.phase === 'racing') {
+    for (const r of rivals) {
+      if (rivalDist(r) - playerDist() > TRACK_LEN * 0.5) {
+        const rprog = (((r.u % 1) + 1) % 1) * TRACK_LEN;
+        let behind = s.prog - rprog; if (behind < 0) behind += TRACK_LEN;
+        if (behind < 45) { s.blueFlag = true; break; }
+      }
+    }
+  }
+  // --- track limits: fully off the tarmac+kerb at speed during a timed lap ---
+  const off = !onTrackState && speed > 15;
+  if (off && !s.wasOff && s.running) {
+    s.trackStrikes++; s.lapInvalid = true;
+    if (sess.mode === 'race' && s.trackStrikes % 3 === 0) { s.penalty += 5; flashLap('TRACK LIMITS — +5s PENALTY'); }
+    else flashLap('TRACK LIMITS — lap time deleted');
+  }
+  s.wasOff = off;
 }
 function physStep(dt) {
   updatePitState();
@@ -1145,7 +1187,7 @@ function physCore(dt) {
   // tyre grip: compound grip × wear fall-off (steeper past the ~85% cliff),
   // folded into the surface mu so worn tyres slide on tarmac and grass alike
   const tc = TCOMP[s.tire.compound] || TCOMP.M;
-  const tireGrip = tc.grip * (1 - 0.16 * s.tire.wear) * (s.tire.wear > 0.85 ? 1 - (s.tire.wear - 0.85) * 0.8 : 1);
+  const tireGrip = tc.grip * (1 - 0.16 * s.tire.wear) * (s.tire.wear > 0.85 ? 1 - (s.tire.wear - 0.85) * 0.8 : 1) * (s.tempGrip || 1);
   // grass grip: reduced but not a cliff — brushing a wheel over the edge
   // shouldn't instantly snap the car around
   const mu = (onTrack ? MU : 0.85) * tireGrip;
@@ -1196,7 +1238,8 @@ function physCore(dt) {
     // ERS deployment adds drive force (biggest effect at high speed, where the
     // engine is power- not traction-limited)
     const ersMul = 1 + (s.ersDeploy ? (s.ersOT ? ERS_BOOST_OT : ERS_BOOST_BAL) : 0);
-    FxDrive = s.thr * Math.min(14000 * ersMul, POWER * ersMul / Math.max(vLong, 8));
+    const pMul = ersMul * (s.fuelMix === 0 ? 0.97 : s.fuelMix === 2 ? 1.04 : 1);  // engine mode: lean/std/rich
+    FxDrive = s.thr * Math.min(14000 * pMul, POWER * pMul / Math.max(vLong, 8));
     // traction control: while steering, leave the rear tires lateral headroom
     // so power-on corner exits can't pitch the car into a slide
     const tcCap = assistsOn ? (0.78 - 0.25 * Math.min(1, Math.abs(s.steer))) : 0.95;
@@ -1208,8 +1251,8 @@ function physCore(dt) {
       // keep enough grip to actually turn (no more brake-and-plow-straight)
       const absScale = assistsOn ? 1 - 0.45 * Math.min(1, Math.abs(s.steer)) : 1;
       const Fb = s.brk * mu * FzT * 1.02 * absScale;
-      FxBrakeF = Math.min(0.62 * Fb, mu * Fzf); // forward brake bias, capped per axle
-      FxBrakeR = Math.min(0.38 * Fb, mu * Fzr);
+      FxBrakeF = Math.min(s.brakeBias * Fb, mu * Fzf); // adjustable brake bias, capped per axle
+      FxBrakeR = Math.min((1 - s.brakeBias) * Fb, mu * Fzr);
     } else {
       vLong = Math.max(vLong - 4 * s.brk * dt, -8); // gentle reverse
     }
@@ -1302,14 +1345,15 @@ function physCore(dt) {
       s.secLap[2] = t3;
       if (s.secBest[2] == null || t3 < s.secBest[2]) { s.secBest[2] = t3; s.secCol[2] = 'p'; }
       else s.secCol[2] = 'y';
-      if (!s.best || s.last < s.best) {
+      if (!s.lapInvalid && (!s.best || s.last < s.best)) {
         s.best = s.last;
         s.bestT = s.curT.slice(); // checkpoint times of the new best lap
         flashLap(`LAP ${s.lap}  —  ${fmt(s.last)}  ★ BEST`);
-      } else flashLap(`LAP ${s.lap}  —  ${fmt(s.last)}`);
+      } else flashLap(`LAP ${s.lap}  —  ${fmt(s.last)}${s.lapInvalid ? '  ⚠ LAP INVALID' : ''}`);
     }
     s.lap++; s.lapStart = now; s.running = true;
     s.curT.fill(-1);
+    s.lapInvalid = false;                                          // fresh lap
     s.sec = 0; s.secStart = now; s.secLap = [null, null, null];   // new lap, keep bests
   }
   s.prog = prog;
@@ -1366,6 +1410,12 @@ addEventListener('keydown', e => {
       state.ersMode = state.ersMode === 1 ? 0 : 1;
       flashLap(state.ersMode === 1 ? 'ERS: BALANCED — auto-deploy' : 'ERS: HARVEST — saving battery');
       break;
+    case 'KeyQ':
+      state.fuelMix = (state.fuelMix + 1) % 3;
+      flashLap('ENGINE: ' + ['LEAN — saving fuel', 'STANDARD', 'RICH — max power'][state.fuelMix]);
+      break;
+    case 'BracketLeft': state.brakeBias = Math.max(0.54, state.brakeBias - 0.01); flashLap('BRAKE BIAS ' + Math.round(state.brakeBias * 100) + '% FRONT'); break;
+    case 'BracketRight': state.brakeBias = Math.min(0.70, state.brakeBias + 0.01); flashLap('BRAKE BIAS ' + Math.round(state.brakeBias * 100) + '% FRONT'); break;
     case 'Digit1': state.nextCompound = 'S'; flashLap('NEXT STOP: SOFT'); break;
     case 'Digit2': state.nextCompound = 'M'; flashLap('NEXT STOP: MEDIUM'); break;
     case 'Digit3': state.nextCompound = 'H'; flashLap('NEXT STOP: HARD'); break;
@@ -1567,6 +1617,23 @@ function updateHUD(speedKmh) {
   else { em.textContent = state.brk > 0.05 ? 'HARVESTING' : (state.ersMode === 1 ? 'ERS BALANCED' : 'ERS HARVEST'); em.className = ''; }
   // DRS indicator
   $('drs').className = state.drsOpen ? 'hud open' : state.drsAvail ? 'hud avail' : 'hud';
+
+  // MFD: tyre temps (colour by heat) + fuel / engine mode / brake bias
+  $('mfd').classList.toggle('show', sess.mode !== 'menu');
+  const tempCol = t => t < 75 ? '#3a7bd6' : t < 88 ? '#2a9d8f' : t < 110 ? '#2ec26a' : t < 125 ? '#e8993a' : '#e5342b';
+  const tids = ['ttFL', 'ttFR', 'ttRL', 'ttRR'];
+  for (let i = 0; i < 4; i++) { const el = $(tids[i]); el.style.background = tempCol(state.tireTemp[i]); el.textContent = Math.round(state.tireTemp[i]); }
+  $('mFuel').textContent = Math.max(0, state.fuel).toFixed(0);
+  $('mMix').textContent = ['LEAN', 'STD', 'RICH'][state.fuelMix];
+  $('mBB').textContent = Math.round(state.brakeBias * 100) + '%';
+
+  // flags + penalty
+  const fl = $('flag');
+  fl.className = state.blueFlag ? 'hud blue' : 'hud';
+  fl.textContent = state.blueFlag ? 'BLUE FLAG' : '';
+  const pen = $('penalty');
+  if (state.penalty > 0) { pen.className = 'hud show'; pen.textContent = '+' + state.penalty + 's PENALTY'; }
+  else pen.className = 'hud';
 
   return rpmFrac;
 }
@@ -2086,6 +2153,9 @@ function clearPlayerLaps() {
   // reset ERS (start with a useful charge) + DRS
   state.ers = 0.7; state.ersDeploy = false; state.ersOT = false;
   state.drsAvail = false; state.drsOpen = false; state.drsAnn = false;
+  // fresh tyres/fuel + cleared penalties each session (keep brake-bias/mix setup)
+  state.tireTemp = [90, 90, 88, 88]; state.fuel = 100;
+  state.lapInvalid = false; state.trackStrikes = 0; state.penalty = 0; state.blueFlag = false; state.wasOff = false;
   // fresh tyres of the chosen compound, and a clean pit state, each session
   state.tire = { compound: state.nextCompound || 'M', wear: 0 };
   state.pitRun = false; state.pitLimiter = false;
@@ -2137,13 +2207,13 @@ function endQuali() {
 }
 function endRace() {
   sess.running = false;
-  const order = rivals.map(r => ({ name: r.def.name, dist: rivalDist(r), you: false }))
-    .concat([{ name: 'YOU', dist: playerDist(), you: true }])
+  const order = rivals.map(r => ({ name: r.def.full || r.def.name, dist: rivalDist(r), you: false }))
+    .concat([{ name: 'YOU', dist: playerDist() - state.penalty * 68, you: true }])   // time penalty in the classification
     .sort((a, b) => b.dist - a.dist);
   const pos = order.findIndex(e => e.you) + 1;
   $id('resultPos').textContent = 'P' + pos;
   $id('resultGrid').innerHTML = order.map((e, i) =>
-    `<div class="r${e.you ? ' you' : ''}"><span class="p">P${i + 1}</span><span class="n">${e.name}</span></div>`).join('');
+    `<div class="r${e.you ? ' you' : ''}"><span class="p">P${i + 1}</span><span class="n">${e.name}${e.you && state.penalty > 0 ? ` <small style="opacity:.7">(+${state.penalty}s)</small>` : ''}</span></div>`).join('');
   $id('results').classList.add('show');
 }
 
