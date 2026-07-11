@@ -2711,6 +2711,19 @@ function backToMenu() {
   $id('modebar').textContent = '';
   $id('startlights').classList.remove('show', 'go');
 }
+
+// fullscreen: hides the mobile browser chrome (address bar) in landscape.
+// Works on Android; on iOS use "Add to Home Screen" (web-app meta handles that).
+const _fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+function goFullscreen() {
+  const el = document.documentElement, req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (req && !_fsEl()) { try { const p = req.call(el); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
+}
+function toggleFullscreen() {
+  if (_fsEl()) { (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document); }
+  else goFullscreen();
+}
+
 {
   const modes = document.querySelectorAll('.modes .mode');
   modes.forEach(b => b.addEventListener('click', () => {
@@ -2729,7 +2742,7 @@ function backToMenu() {
       else if (seg.dataset.opt === 'quality' && btn.dataset.v !== QUALITY) { localStorage.setItem('ardennes.quality', btn.dataset.v); location.reload(); }
     })));
   document.querySelector('#optQuality button[data-v="' + QUALITY + '"]')?.classList.add('on');   // reflect current quality
-  $id('startBtn').addEventListener('click', () => startGame(menu.mode));
+  $id('startBtn').addEventListener('click', () => { if (IS_TOUCH) goFullscreen(); startGame(menu.mode); });   // phones go fullscreen on start
   $id('resultBtn').addEventListener('click', backToMenu);
 }
 
@@ -2756,6 +2769,7 @@ if (IS_TOUCH) document.body.classList.add('touch');
   tap('tcDrs', () => (input.drsWant = true));
   tap('tcReset', () => resetCar());
   tap('tcMenu', () => backToMenu());
+  tap('tcFull', () => toggleFullscreen());
 }
 
 // ---------------------------------------------------------------------------
