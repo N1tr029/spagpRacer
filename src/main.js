@@ -3,6 +3,16 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import trackData from './track.json';
+import forestData from './forest.json';
+
+// real OSM forest extent around Spa (landuse=forest), rasterised to a grid in
+// game coordinates — trees only grow where there's actually forest, so La Source
+// and the pit straight stay open while Kemmel/Blanchimont are tree-lined
+const FMASK = (() => { const b = atob(forestData.mask); const a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; })();
+const isForest = (x, z) => {
+  const c = ((x - forestData.minX) / forestData.cell) | 0, r = ((z - forestData.minZ) / forestData.cell) | 0;
+  return c >= 0 && c < forestData.cols && r >= 0 && r < forestData.rows && FMASK[r * forestData.cols + c] === 1;
+};
 
 // ---------------------------------------------------------------------------
 // Track data: real Spa-Francorchamps centerline (OpenStreetMap, ODbL) with
@@ -42,6 +52,55 @@ for (let i = 0; i < N; i++) {
 }
 
 // ---------------------------------------------------------------------------
+// Pit lane: a spline that branches off the start/finish straight just after
+// the Bus Stop chicane, runs down the left (+normal — the pit-building side)
+// past the garage boxes, and merges back before La Source. Its index range
+// wraps through the start/finish line (index 0). It shares the track's world
+// space, so the car physics drives it for real; a locator maps a world point
+// to pit progress + lateral offset from the lane centre.
+// ---------------------------------------------------------------------------
+const PIT_IN_I = 1660;          // entry — just after the Bus Stop chicane (1647)
+const PIT_OUT_I = 40;           // exit  — back onto the S/F straight before La Source (60)
+const PIT_OFF = 15.5;           // lane centre offset from the track centre (m, left)
+const PIT_HW = 2.4;             // pit-lane half width (m)
+const PIT_LIMIT = 80 / 3.6;     // pit speed limit — 80 km/h
+const PIT_TAPER = 16;           // nodes over which the lane blends on/off the track
+
+const pitIdx = [];
+for (let i = PIT_IN_I; ; i = (i + 1) % N) { pitIdx.push(i); if (i === PIT_OUT_I) break; }
+const PIT_NN = pitIdx.length;
+const pitSmooth = t => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+// lateral offset of the lane centre at pit node k: 0 at the tapered ends,
+// PIT_OFF across the middle where the garages sit
+const pitLatAt = k => PIT_OFF * Math.min(pitSmooth(k / PIT_TAPER), pitSmooth((PIT_NN - 1 - k) / PIT_TAPER));
+// world polyline of the lane centre, with cumulative length in .s
+const pitPath = pitIdx.map((i, k) => {
+  const lat = pitLatAt(k), p = P(i), n = normals[i];
+  return { i, k, lat, x: p[0] + n[0] * lat, y: p[1], z: p[2] + n[1] * lat, s: 0 };
+});
+for (let k = 1; k < PIT_NN; k++)
+  pitPath[k].s = pitPath[k - 1].s + Math.hypot(pitPath[k].x - pitPath[k - 1].x, pitPath[k].z - pitPath[k - 1].z);
+const PIT_LEN = pitPath[PIT_NN - 1].s;
+// reverse map track index -> pit node (for seeding the locator's search)
+const pitKofTrack = new Int16Array(N).fill(-1);
+pitIdx.forEach((i, k) => { if (pitKofTrack[i] < 0) pitKofTrack[i] = k; });
+
+// nearest lane-centre node to a world point (windowed around a hint), with the
+// signed lateral offset from the lane centre (measured along the track normal)
+function pitInfo(x, z, hintK) {
+  const c = ((hintK | 0) % PIT_NN + PIT_NN) % PIT_NN;
+  let bk = c, bd = 1e18;
+  for (let d = -26; d <= 26; d++) {
+    const k = ((c + d) % PIT_NN + PIT_NN) % PIT_NN;
+    const nd = (pitPath[k].x - x) ** 2 + (pitPath[k].z - z) ** 2;
+    if (nd < bd) { bd = nd; bk = k; }
+  }
+  const node = pitPath[bk], n = normals[node.i];
+  const lat = (x - node.x) * n[0] + (z - node.z) * n[1];
+  return { k: bk, i: node.i, lat, dist: Math.sqrt(bd), s: node.s, laneLat: node.lat };
+}
+
+// ---------------------------------------------------------------------------
 // Renderer / scene
 // ---------------------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -50,7 +109,7 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.15;
+renderer.toneMappingExposure = 1.2;
 const app = document.getElementById('app');
 app.innerHTML = ''; // drop any canvas from a previous module instance (HMR)
 app.appendChild(renderer.domElement);
@@ -58,8 +117,8 @@ window.__gen = (window.__gen || 0) + 1;
 const GEN = window.__gen; // stale render loops check this and stop
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xa8c8ea);
-scene.fog = new THREE.Fog(0xbdd2e6, 320, 3200);
+scene.background = new THREE.Color(0x6ea6e6);           // richer Ardennes-summer blue
+scene.fog = new THREE.Fog(0x9dc0e6, 550, 4200);        // lighter haze, pushed back
 
 const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.3, 6000);
 
@@ -163,13 +222,15 @@ const raceLine = buildRibbon(
 raceLine.material.transparent = true;
 raceLine.material.opacity = 0.85;
 scene.add(raceLine);
+raceLine.visible = false;   // off by default — the broadcast has no green line (toggle: L)
 
 // (white edge lines removed — track reads as uniform tarmac to the kerbs)
 
 // kerbs on corners (red/white stripes), placed where curvature is significant
 const KERB_THRESH = 0.0045;
 function kerbColor(i) {
-  return (Math.floor(i / 2) % 2 === 0) ? { r: 0.85, g: 0.12, b: 0.10 } : { r: 0.92, g: 0.90, b: 0.88 };
+  // Spa's signature red/yellow kerbing
+  return (Math.floor(i / 2) % 2 === 0) ? { r: 0.86, g: 0.11, b: 0.09 } : { r: 0.93, g: 0.74, b: 0.08 };
 }
 scene.add(buildRibbon(
   i => Math.abs(C(i)) > KERB_THRESH ? HALF_W + KERB_W : HALF_W + 0.001,
@@ -301,68 +362,140 @@ function terrainHeight(x, z) {
   terr.receiveShadow = true;
   scene.add(terr);
 
-  // Ardennes forest — instanced trees outside the track corridor
-  const trunkG = new THREE.CylinderGeometry(0.35, 0.5, 4, 5);
-  const crownG = new THREE.ConeGeometry(3.2, 11, 6);
-  const trunkM = new THREE.MeshStandardMaterial({ color: 0x5a4632, roughness: 1 });
-  const crownM = new THREE.MeshStandardMaterial({ color: 0x2c5233, roughness: 1 });
-  const COUNT = 4200;
-  const trunks = new THREE.InstancedMesh(trunkG, trunkM, COUNT);
-  const crowns = new THREE.InstancedMesh(crownG, crownM, COUNT);
+  // Ardennes forest — dense crossed-quad billboard trees (cheap; read as walls)
+  const treeTex = (kind) => {
+    const c = document.createElement('canvas'); c.width = 128; c.height = 160;
+    const x = c.getContext('2d'); x.clearRect(0, 0, 128, 160);
+    x.fillStyle = '#3f3123'; x.fillRect(58, 130, 12, 30);            // trunk
+    const blob = (bx, by, r, col) => { x.fillStyle = col; x.beginPath(); x.arc(bx, by, r, 0, 7); x.fill(); };
+    if (kind === 'pine') {
+      // full conical spruce — wide overlapping tiers
+      const g = ['#173620', '#1f4429', '#285534'];
+      for (let L = 0; L < 8; L++) {
+        const cy = 16 + L * 16, w = 13 + L * 10.5;
+        x.fillStyle = g[L % 3];
+        x.beginPath(); x.moveTo(64, cy - 26); x.lineTo(64 - w, cy + 14); x.lineTo(64 + w, cy + 14); x.closePath(); x.fill();
+      }
+      x.globalAlpha = 0.5; x.fillStyle = '#3a6b41';   // sunlit right side
+      for (let L = 1; L < 8; L++) { const cy = 16 + L * 16, w = 13 + L * 10.5; x.beginPath(); x.moveTo(64, cy - 26); x.lineTo(64 + w, cy + 14); x.lineTo(64 + w * 0.35, cy + 14); x.closePath(); x.fill(); }
+      x.globalAlpha = 1;
+    } else {
+      // big bushy round canopy — many overlapping blobs for a full silhouette
+      for (const [bx, by, r] of [[64, 52, 43], [40, 66, 31], [88, 66, 31], [56, 40, 27], [78, 42, 25],
+        [64, 84, 41], [44, 98, 29], [84, 98, 29], [64, 112, 30], [50, 76, 27], [80, 76, 27]]) blob(bx, by, r, '#20492a');
+      for (const [bx, by, r] of [[58, 58, 30], [74, 62, 28], [64, 90, 30], [48, 86, 23], [82, 86, 23]]) blob(bx, by, r, '#2c5c34');
+      for (const [bx, by, r] of [[52, 44, 21], [64, 62, 22], [46, 74, 16]]) blob(bx, by, r, '#3d7444');   // highlights
+    }
+    const t = new THREE.CanvasTexture(c); t.anisotropy = 4; return t;
+  };
+  const crossGeo = (w, h) => {
+    const hw = w / 2, g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(
+      [-hw, 0, 0, hw, 0, 0, hw, h, 0, -hw, h, 0, 0, 0, -hw, 0, 0, hw, 0, h, hw, 0, h, -hw], 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1], 2));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(
+      [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+    g.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+    return g;
+  };
+  const PER = 6000;
+  const forest = [
+    { m: new THREE.InstancedMesh(crossGeo(9, 15), new THREE.MeshLambertMaterial({ map: treeTex('pine'), alphaTest: 0.5, side: THREE.DoubleSide }), PER), n: 0 },
+    { m: new THREE.InstancedMesh(crossGeo(11, 12), new THREE.MeshLambertMaterial({ map: treeTex('leaf'), alphaTest: 0.5, side: THREE.DoubleSide }), PER), n: 0 },
+  ];
   const dummy = new THREE.Object3D();
-  let placed = 0, tries = 0;
-  let seed = 12345;
+  let placed = 0, tries = 0, seed = 12345;
   const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-  while (placed < COUNT && tries < COUNT * 30) {
-    tries++;
-    const x = minX - pad + rand() * (maxX - minX + pad * 2);
-    const z = minZ - pad + rand() * (maxZ - minZ + pad * 2);
-    let dmin = 1e18;
-    for (const s of samples) dmin = Math.min(dmin, (s[0] - x) ** 2 + (s[2] - z) ** 2);
-    const d = Math.sqrt(dmin);
-    if (d < 21 || d > 700) continue; // dense tree walls right behind the barriers
-    const y = terrainHeight(x, z);
-    const s = 0.7 + rand() * 0.9;
-    dummy.position.set(x, y + 2 * s, z); dummy.scale.setScalar(s); dummy.rotation.y = rand() * 6.28;
-    dummy.updateMatrix(); trunks.setMatrixAt(placed, dummy.matrix);
-    dummy.position.y = y + (4 + 5.5) * s;
-    dummy.updateMatrix(); crowns.setMatrixAt(placed, dummy.matrix);
-    placed++;
+  // keep the forest out of the pit complex (apron / garages on the pit side)
+  const pitKeepOut = [];
+  for (let k = 2; k < PIT_NN - 2; k += 2) {
+    const nd = pitPath[k], n = normals[nd.i], p = P(nd.i);
+    pitKeepOut.push([p[0] + n[0] * 19, p[2] + n[1] * 19]);
   }
-  trunks.count = crowns.count = placed;
-  crowns.castShadow = true;
-  scene.add(trunks, crowns);
+  const inPitZone = (x, z) => {
+    for (const q of pitKeepOut) if ((q[0] - x) ** 2 + (q[1] - z) ** 2 < 24 * 24) return true;
+    return false;
+  };
+  // clear the forest where grandstands stand, so they aren't buried behind trees
+  const standZones = (trackData.stands || []).map(st => [st.x, st.z, (Math.max(st.len, st.wid || 30) * 0.6 + 26) ** 2]);
+  const inStandZone = (x, z) => { for (const q of standZones) if ((q[0] - x) ** 2 + (q[1] - z) ** 2 < q[2]) return true; return false; };
+  // walk the track dropping several trees per point on each side, biased to pack
+  // a dense wall just behind the barriers and thin into the distance
+  for (let i = 0; i < N && placed < PER * 2; i++) {
+    const p = P(i), n = normals[i], tg = tangents[i];
+    for (let rep = 0; rep < 14; rep++) {
+      const side = rand() < 0.5 ? 1 : -1;
+      const off = side * (17 + rand() * rand() * 145);   // packed just behind the barrier, thinning out
+      const along = (rand() - 0.5) * STEP * 3;
+      const x = p[0] + n[0] * off + tg[0] * along;
+      const z = p[2] + n[1] * off + tg[1] * along;
+      if (!isForest(x, z)) continue;                     // only where the real OSM forest is
+      if (inPitZone(x, z) || inStandZone(x, z)) continue;
+      let dmin = 1e18;
+      for (const smp of samples) { const dd = (smp[0] - x) ** 2 + (smp[2] - z) ** 2; if (dd < dmin) dmin = dd; }
+      if (dmin < 289) continue;          // 17 m — never drop a tree on any stretch of track
+      const ft = forest[rand() < 0.5 ? 0 : 1];
+      if (ft.n >= PER) continue;
+      const y = terrainHeight(x, z), s = 0.85 + rand() * 0.8;
+      dummy.position.set(x, y, z); dummy.scale.set(s, s, s); dummy.rotation.y = rand() * 6.28;
+      dummy.updateMatrix(); ft.m.setMatrixAt(ft.n++, dummy.matrix);
+      placed++;
+    }
+  }
+  forest.forEach(ft => { ft.m.count = ft.n; ft.m.castShadow = false; scene.add(ft.m); });
 }
 
 // barriers
-// armco guardrail texture: gray base, two silver rails, catch fence on top
+// F1-style trackside barrier texture: sponsor hoarding band + catch fence above,
+// mapped so the visible (above-ground) part reads hoarding-then-fence
 const armcoTex = (() => {
-  const cnv = document.createElement('canvas'); cnv.width = 64; cnv.height = 128;
+  const cnv = document.createElement('canvas'); cnv.width = 256; cnv.height = 128;
   const ctx = cnv.getContext('2d');
-  ctx.fillStyle = '#7d838c'; ctx.fillRect(0, 0, 64, 128);       // armco base (bottom 60%)
-  ctx.fillStyle = '#b8bec6'; ctx.fillRect(0, 70, 64, 14);       // rail
-  ctx.fillStyle = '#a2a8b0'; ctx.fillRect(0, 96, 64, 14);       // rail
-  ctx.fillStyle = '#31363d'; ctx.fillRect(0, 0, 64, 52);        // fence band (top 40%)
-  ctx.strokeStyle = '#565c64'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(4, 0); ctx.lineTo(4, 52); ctx.stroke();  // fence post
-  ctx.strokeStyle = '#4a5058'; ctx.lineWidth = 1;
-  for (let k = -2; k < 6; k++) {
-    ctx.beginPath(); ctx.moveTo(k * 16, 0); ctx.lineTo(k * 16 + 52, 52); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(k * 16, 52); ctx.lineTo(k * 16 + 52, 0); ctx.stroke();
+  // buried base (below ground): y 96..128
+  ctx.fillStyle = '#2b2f36'; ctx.fillRect(0, 96, 256, 32);
+  // sponsor hoarding: y 64..96
+  const panels = [['#d4001a', 'PIRELLI'], ['#0a1622', 'F1'], ['#00843d', 'ARAMCO'],
+    ['#ffcc00', 'DHL'], ['#004a8f', 'AWS'], ['#12161d', 'EMIRATES']];
+  const pw = 256 / panels.length;
+  panels.forEach(([col, txt], i) => {
+    ctx.fillStyle = col; ctx.fillRect(i * pw, 64, pw, 32);
+    ctx.fillStyle = /^#ffc|^#fff|^#ffe/i.test(col) ? '#111' : '#fff';
+    ctx.font = 'bold 13px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(txt, i * pw + pw / 2, 81);
+  });
+  ctx.fillStyle = '#eef2f6'; ctx.fillRect(0, 61, 256, 3);   // white trim
+  // catch fence: y 0..61 (grey mesh + posts)
+  ctx.fillStyle = '#6a7178'; ctx.fillRect(0, 0, 256, 61);
+  ctx.strokeStyle = 'rgba(40,46,54,0.55)'; ctx.lineWidth = 1;
+  for (let k = -4; k < 20; k++) {
+    ctx.beginPath(); ctx.moveTo(k * 18, 0); ctx.lineTo(k * 18 + 61, 61); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(k * 18, 61); ctx.lineTo(k * 18 + 61, 0); ctx.stroke();
   }
+  ctx.strokeStyle = '#484e56'; ctx.lineWidth = 3;
+  for (let x = 0; x <= 256; x += 42) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 61); ctx.stroke(); }
   const t = new THREE.CanvasTexture(cnv);
   t.wrapS = THREE.RepeatWrapping;
   return t;
 })();
 for (const side of [1, -1]) {
-  const off = side * (HALF_W + 9);
+  const baseOff = side * (HALF_W + 9);
   const pos = [], idx = [], uv = [];
   for (let i = 0; i <= N; i++) {
-    const p = P(i), n = normals[i % N];
+    const ii = i % N;
+    const p = P(i), n = normals[ii];
+    // on the pit side (+normal), the default 15.5 m barrier would run straight
+    // down the pit lane — push it out behind the garages there, tapering at the
+    // pit entry/exit so the loop stays continuous
+    let off = baseOff;
+    if (side === 1 && pitKofTrack[ii] >= 0) {
+      const pk = pitKofTrack[ii];
+      const blend = pitSmooth(Math.min(pk, PIT_NN - 1 - pk) / PIT_TAPER);
+      off = baseOff + blend * (33 - (HALF_W + 9));
+    }
     const x = p[0] + n[0] * off, z = p[2] + n[1] * off;
-    const y = p[1] - 2.2; // extend below the sloping shoulder so no gap shows
-    pos.push(x, y, z, x, y + 3.6, z);
-    uv.push(i * STEP / 4, 0, i * STEP / 4, 1);
+    const y = p[1] - 1.2; // dip below the shoulder so no gap shows at the base
+    pos.push(x, y, z, x, y + 4.8, z); // ~3.6 m stands proud: hoarding + catch fence
+    uv.push(i * STEP / 16, 0, i * STEP / 16, 1);
     if (i < N) { const k = i * 2; idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); }
   }
   const g = new THREE.BufferGeometry();
@@ -407,13 +540,13 @@ addGantry(900, 'ARDENNES GP');
 const crowdTex = (() => {
   const cnv = document.createElement('canvas'); cnv.width = 256; cnv.height = 64;
   const ctx = cnv.getContext('2d');
-  ctx.fillStyle = '#23282f'; ctx.fillRect(0, 0, 256, 64);
+  ctx.fillStyle = '#5a626b'; ctx.fillRect(0, 0, 256, 64);   // light concrete seating
   let seed = 7;
   const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-  const cols = ['#c0392b', '#2980b9', '#f1c40f', '#ecf0f1', '#27ae60', '#e67e22', '#8e44ad'];
-  for (let k = 0; k < 1400; k++) {
+  const cols = ['#e8483a', '#3a9bdc', '#f5d033', '#ffffff', '#33c46a', '#f0842e', '#a457c9', '#ffffff', '#eef2f6'];
+  for (let k = 0; k < 2600; k++) {
     ctx.fillStyle = cols[Math.floor(rand() * cols.length)];
-    ctx.fillRect(Math.floor(rand() * 256), Math.floor(rand() * 64), 2, 2);
+    ctx.fillRect(Math.floor(rand() * 256), Math.floor(rand() * 64), 3, 2);
   }
   const t = new THREE.CanvasTexture(cnv);
   t.magFilter = THREE.NearestFilter;
@@ -422,36 +555,181 @@ const crowdTex = (() => {
 const crowdM = new THREE.MeshStandardMaterial({ map: crowdTex, roughness: 1 });
 // grandstands at their real mapped positions (OSM building=grandstand
 // polygons around the circuit: Tribune F1, Raidillon, Endurance, Silver, …)
+const standNear = (x, z) => {
+  let b = 1e18;
+  for (let i = 0; i < N; i += 4) { const q = P(i); b = Math.min(b, (q[0] - x) ** 2 + (q[2] - z) ** 2); }
+  return b;
+};
+const standStruct = new THREE.MeshStandardMaterial({ color: 0x363c44, roughness: 0.9 });
+const standRoof = new THREE.MeshStandardMaterial({ color: 0x565d67, roughness: 0.85 });
+const standFascia = new THREE.MeshStandardMaterial({ color: 0xd4001a, roughness: 0.55 });
 for (const st of trackData.stands) {
-  const tiers = Math.max(2, Math.min(4, Math.round(st.wid / 8)));
-  const len = Math.min(st.len, 170);
-  const ux = Math.cos(st.ang), uz = Math.sin(st.ang);   // long axis
-  // step tiers across the footprint, away from the track
-  let px = -uz, pz = ux;
-  const near = (x, z) => {
-    let b = 1e18;
-    for (let i = 0; i < N; i += 4) { const q = P(i); b = Math.min(b, (q[0]-x)**2 + (q[2]-z)**2); }
-    return b;
-  };
-  if (near(st.x + px * 20, st.z + pz * 20) < near(st.x - px * 20, st.z - pz * 20)) { px = -px; pz = -pz; }
-  for (let tier = 0; tier < tiers; tier++) {
-    const cx = st.x + px * (tier * 4 - (tiers - 1) * 2);
-    const cz = st.z + pz * (tier * 4 - (tiers - 1) * 2);
-    const stand = new THREE.Mesh(new THREE.BoxGeometry(len, 3, 4), crowdM);
-    stand.rotation.y = -st.ang;
-    stand.position.set(cx, terrainHeight(cx, cz) + 1.6 + tier * 2.6, cz);
-    stand.castShadow = true; scene.add(stand);
+  const len = Math.max(28, Math.min(st.len, 175));
+  // perpendicular pointing AWAY from the track — the seating rakes up that way
+  let px = -Math.sin(st.ang), pz = Math.cos(st.ang);
+  if (standNear(st.x + px * 20, st.z + pz * 20) < standNear(st.x - px * 20, st.z - pz * 20)) { px = -px; pz = -pz; }
+  const gY = terrainHeight(st.x, st.z);
+  const grp = new THREE.Group();
+  grp.position.set(st.x, gY, st.z);
+  grp.rotation.y = Math.atan2(px, pz);            // local +Z = away from track
+  const tiers = 7, stepBack = 1.8, stepUp = 1.4, D = tiers * stepBack, topY = tiers * stepUp;
+  // raked crowd seating (front/low toward the track at -Z, back/high at +Z)
+  for (let t = 0; t < tiers; t++) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(len, 1.3, stepBack + 0.3), crowdM);
+    m.position.set(0, 0.6 + t * stepUp, -D / 2 + 0.4 + t * stepBack);
+    m.castShadow = true; grp.add(m);
   }
+  // back wall + side walls
+  const back = new THREE.Mesh(new THREE.BoxGeometry(len + 3, topY + 5, 1.2), standStruct);
+  back.position.set(0, (topY + 5) / 2, D / 2 + 0.6); back.castShadow = true; grp.add(back);
+  for (const sx of [-1, 1]) {
+    const sw = new THREE.Mesh(new THREE.BoxGeometry(1, topY + 5, D + 1.2), standStruct);
+    sw.position.set(sx * (len / 2 + 0.5), (topY + 5) / 2, 0.3); grp.add(sw);
+  }
+  // roof canopy cantilevered forward over the seating + red sponsor fascia
+  const roofDepth = D * 0.85;
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(len + 3, 0.5, roofDepth), standRoof);
+  roof.position.set(0, topY + 4.5, D / 2 - roofDepth / 2 + 0.6); roof.castShadow = true; grp.add(roof);
+  const fascia = new THREE.Mesh(new THREE.BoxGeometry(len + 3, 1.3, 0.4), standFascia);
+  fascia.position.set(0, topY + 4.2, D / 2 - roofDepth + 0.6); grp.add(fascia);
+  scene.add(grp);
 }
-{ // pit building (left of pit straight)
-  const i0 = 1700;
-  const p = P(i0), t = tangents[i0 % N], n = normals[i0 % N];
-  const yaw = -Math.atan2(t[1], t[0]); // parallel to the straight (no gantry +90°)
-  const pitB = new THREE.Mesh(new THREE.BoxGeometry(150, 7, 12),
-    new THREE.MeshStandardMaterial({ color: 0x3a4048, roughness: 0.8 }));
-  pitB.rotation.y = yaw;
-  pitB.position.set(p[0] + n[0] * 26 + t[0] * 10, p[1] + 3.5, p[2] + n[1] * 26 + t[1] * 10);
-  pitB.castShadow = true; scene.add(pitB);
+// ---------------------------------------------------------------------------
+// Pit complex: fast lane, wall, apron, garages, boxes & lines — all built from
+// the pit spline defined near the top. pitBoxes are shared with the pit-stop
+// logic below (one box per grid slot; PLAYER_BOX is yours).
+// ---------------------------------------------------------------------------
+const N_BOX = 9, PLAYER_BOX = 4;
+const pitBoxes = [];
+{
+  const k0 = 46, k1 = 82;   // tight ~18 m box row, centred on the pit straight
+  for (let b = 0; b < N_BOX; b++) {
+    const k = Math.round(k0 + (k1 - k0) * b / (N_BOX - 1));
+    const nd = pitPath[k];
+    pitBoxes.push({ b, k, i: nd.i, x: nd.x, y: nd.y, z: nd.z });
+  }
+
+  const midA = PIT_TAPER, midB = PIT_NN - PIT_TAPER;   // constant-offset middle
+  const pitHead = k => { const t = tangents[pitPath[k].i]; return Math.atan2(t[0], t[1]); };
+
+  // flat paved apron under the whole pit area so nothing floats over the grass
+  {
+    const pos = [], idx = []; let vi = 0;
+    for (let k = midA - 3; k <= midB + 3; k++) {
+      const nd = pitPath[k], n = normals[nd.i], p = P(nd.i), y = nd.y + 0.01;
+      pos.push(p[0] + n[0] * 8.4, y, p[2] + n[1] * 8.4);
+      pos.push(p[0] + n[0] * 31, y, p[2] + n[1] * 31);
+      if (k < midB + 3) idx.push(vi, vi + 2, vi + 1, vi + 1, vi + 2, vi + 3);
+      vi += 2;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx); g.computeVertexNormals();
+    const apron = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x878d94, roughness: 0.96 }));
+    apron.receiveShadow = true; scene.add(apron);
+  }
+
+  // pit-lane surface built off the smooth track normal (consistent width, no
+  // taper jitter): dark tarmac, thin clean white edge lines, blue fast lane.
+  // oa/ob are offsets added to the lane-centre lateral (nd.lat).
+  function pitRibbon(oa, ob, yLift, mat) {
+    const pos = [], idx = [];
+    for (let k = 0; k < PIT_NN; k++) {
+      const nd = pitPath[k], n = normals[nd.i], p = P(nd.i);
+      const a = nd.lat + oa, b = nd.lat + ob;
+      pos.push(p[0] + n[0] * a, nd.y + yLift, p[2] + n[1] * a);
+      pos.push(p[0] + n[0] * b, nd.y + yLift, p[2] + n[1] * b);
+      if (k < PIT_NN - 1) { const j = k * 2; idx.push(j, j + 2, j + 1, j + 1, j + 2, j + 3); }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx); g.computeVertexNormals();
+    const m = new THREE.Mesh(g, mat); m.receiveShadow = true; scene.add(m); return m;
+  }
+  pitRibbon(PIT_HW, -PIT_HW, 0.04, new THREE.MeshStandardMaterial({ color: 0x2c2f34, roughness: 0.96 }));   // tarmac
+  pitRibbon(PIT_HW, PIT_HW - 0.16, 0.055, new THREE.MeshBasicMaterial({ color: 0xeef2f6 }));                // white edge, track side
+  pitRibbon(-PIT_HW + 0.16, -PIT_HW, 0.055, new THREE.MeshBasicMaterial({ color: 0xeef2f6 }));              // white edge, garage side
+  pitRibbon(0.13, -0.13, 0.05, new THREE.MeshBasicMaterial({ color: 0x2f74d8 }));                           // blue fast-lane line
+
+  // pit wall separating the racing surface from the fast lane
+  {
+    const wallOff = 9.3, h = 1.0, pos = [], idx = []; let vi = 0;
+    for (let k = midA; k <= midB; k++) {
+      const nd = pitPath[k], n = normals[nd.i], p = P(nd.i);
+      const wx = p[0] + n[0] * wallOff, wz = p[2] + n[1] * wallOff;
+      pos.push(wx, nd.y, wz, wx, nd.y + h, wz);
+      if (k < midB) idx.push(vi, vi + 2, vi + 1, vi + 1, vi + 2, vi + 3);
+      vi += 2;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx); g.computeVertexNormals();
+    const wall = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.6, metalness: 0.1, side: THREE.DoubleSide }));
+    wall.castShadow = true; scene.add(wall);
+  }
+
+  // pit building spanning the box row: front facade + roof overhang
+  {
+    const kA = pitBoxes[0].k - 3, kB = pitBoxes[N_BOX - 1].k + 3, front = 23.5, back = 30.5, h = 6.5;
+    const faceMat = new THREE.MeshStandardMaterial({ color: 0x565d66, roughness: 0.85, side: THREE.DoubleSide });
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0x353b42, roughness: 0.9, side: THREE.DoubleSide });
+    const strip = (offFn, yFn, mat) => {
+      const pos = [], idx = []; let vi = 0;
+      for (let k = kA; k <= kB; k++) {
+        const nd = pitPath[k], n = normals[nd.i], p = P(nd.i);
+        const [oa, ob] = offFn(); const [ya, yb] = yFn(nd);
+        pos.push(p[0] + n[0] * oa, ya, p[2] + n[1] * oa, p[0] + n[0] * ob, yb, p[2] + n[1] * ob);
+        if (k < kB) idx.push(vi, vi + 2, vi + 1, vi + 1, vi + 2, vi + 3);
+        vi += 2;
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setIndex(idx); g.computeVertexNormals();
+      const m = new THREE.Mesh(g, mat); m.castShadow = true; scene.add(m); return m;
+    };
+    strip(() => [front, front], nd => [nd.y, nd.y + h], faceMat);        // front facade
+    strip(() => [front, back], nd => [nd.y + h, nd.y + h], roofMat);     // flat roof
+  }
+
+  // per-box door bays on the facade + painted stop boxes (green = your box)
+  const boxMarkTex = (() => {
+    const cv = document.createElement('canvas'); cv.width = 64; cv.height = 128;
+    const c = cv.getContext('2d'); c.strokeStyle = 'rgba(255,255,255,0.92)'; c.lineWidth = 7; c.strokeRect(6, 6, 52, 116);
+    return new THREE.CanvasTexture(cv);
+  })();
+  const bayTex = (b, isP) => {
+    const cv = document.createElement('canvas'); cv.width = 128; cv.height = 96;
+    const c = cv.getContext('2d'); c.fillStyle = isP ? '#159648' : '#14171b'; c.fillRect(0, 0, 128, 96);
+    c.strokeStyle = 'rgba(255,255,255,.25)'; c.lineWidth = 4; c.strokeRect(3, 3, 122, 90);
+    c.fillStyle = '#eef3f8'; c.font = 'bold 62px Arial'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(String(b + 1), 64, 52);
+    return new THREE.CanvasTexture(cv);
+  };
+  for (const box of pitBoxes) {
+    const nd = pitPath[box.k], n = normals[nd.i], p = P(nd.i), heading = pitHead(box.k);
+    const isP = box.b === PLAYER_BOX;
+    // door bay panel on the building face, opening onto the lane
+    const bay = new THREE.Mesh(new THREE.PlaneGeometry(7, 4.4),
+      new THREE.MeshStandardMaterial({ map: bayTex(box.b, isP), roughness: 0.7, side: THREE.DoubleSide }));
+    bay.position.set(p[0] + n[0] * 23.3, nd.y + 2.3, p[2] + n[1] * 23.3);
+    bay.rotation.y = heading + Math.PI / 2;
+    scene.add(bay);
+    // painted stop box on the lane
+    const mk = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 5.2),
+      new THREE.MeshBasicMaterial({ map: boxMarkTex, transparent: true, depthWrite: false, color: isP ? 0x8dffb2 : 0xffffff }));
+    mk.rotation.x = -Math.PI / 2; mk.rotation.z = -heading;
+    mk.position.set(nd.x, nd.y + 0.07, nd.z);
+    scene.add(mk);
+  }
+
+  // entry & exit lines painted across the fast lane
+  for (const k of [midA + 1, midB - 1]) {
+    const nd = pitPath[k], heading = pitHead(k);
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(PIT_HW * 2, 0.5), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    line.rotation.x = -Math.PI / 2; line.rotation.z = -heading;
+    line.position.set(nd.x, nd.y + 0.08, nd.z);
+    scene.add(line);
+  }
 }
 
 { // brake marker boards before the big stops
@@ -665,6 +943,10 @@ const state = {
   r: 0, thr: 0, brk: 0, ax: 0, axSm: 0,
   // per-checkpoint times (one slot per track point) for live delta-to-best
   curT: new Float32Array(N).fill(-1), bestT: null,
+  // tyres + pit state
+  tire: { compound: 'M', wear: 0 }, nextCompound: 'M',
+  pitK: 0, onPitLane: false, pitRun: false, pitLimiter: false,
+  pitService: 0, pitServiced: false, pitFrozen: false,
 };
 
 const MASS = 800, POWER = 690000, MU = 1.75, DFK = 0.0062, CDA = 1.45;
@@ -672,6 +954,15 @@ const COLL_R = 2.6; // car-to-car contact radius (m)
 // bicycle-model parameters: yaw inertia, CG position/height, axle cornering stiffness
 const IZ = 1050, CG_A = 1.8, CG_B = 1.6, WHEELBASE = 3.4, CG_H = 0.32;
 const CA_F = 2.1e5, CA_R = 2.5e5; // N/rad before saturation
+
+// tyre compounds: grip multiplier vs wear rate. wear (0..1) bleeds grip away,
+// so a worn set slides and lap times fall off — that's the reason to pit.
+const TCOMP = {
+  S: { name: 'SOFT',   short: 'S', col: '#e5342b', grip: 1.05, wear: 1.7 },
+  M: { name: 'MEDIUM', short: 'M', col: '#e8c43a', grip: 1.00, wear: 1.0 },
+  H: { name: 'HARD',   short: 'H', col: '#e9edf2', grip: 0.96, wear: 0.6 },
+};
+const PIT_STOP_TIME = 2.6;   // seconds stationary in the box for a tyre change
 
 function trackInfo(x, z, hint) {
   let bi = hint, bd = 1e18;
@@ -696,9 +987,50 @@ function trackInfo(x, z, hint) {
 }
 
 let onTrackState = true;
+
+// pit-lane locator + limiter/commit state machine, run once per physics step
+function updatePitState() {
+  const s = state;
+  const seed = pitKofTrack[s.idx] >= 0 ? pitKofTrack[s.idx] : (s.pitK | 0);
+  const pi = pitInfo(s.x, s.z, seed);
+  s.pitK = pi.k;
+  const onCorridor = pi.dist < PIT_HW + 1.2;
+  s.onPitLane = onCorridor && pi.laneLat > 2.5;
+  if (!s.pitRun) {
+    // commit to a pit run once you're clearly on the offset lane
+    if (onCorridor && pi.laneLat > 4 && pi.k < PIT_NN - PIT_TAPER) {
+      s.pitRun = true; s.pitServiced = false; s.pitService = 0;
+    }
+  } else if ((pi.k >= PIT_NN - PIT_TAPER && pi.laneLat < 3) || pi.dist > PIT_HW + 5) {
+    s.pitRun = false;   // merged back out, or spun off the lane
+  }
+  s.pitLimiter = s.pitRun;
+}
+
+// pit-box service: hold the car in your box, swap tyres, then release (per frame)
+function updatePitStop(dt) {
+  const s = state;
+  if (!s.pitRun) { s.pitService = 0; s.pitServiced = false; s.pitFrozen = false; return; }
+  const pb = pitBoxes[PLAYER_BOX];
+  let dk = Math.abs(s.pitK - pb.k); dk = Math.min(dk, PIT_NN - dk);
+  const speed = Math.hypot(s.vx, s.vz);
+  if (!s.pitServiced && dk <= 3 && speed < 2.2) {
+    s.pitFrozen = true;
+    s.pitService += dt;
+    if (s.pitService >= PIT_STOP_TIME) {
+      s.tire = { compound: s.nextCompound, wear: 0 };
+      s.pitServiced = true; s.pitFrozen = false;
+      flashLap('TYRES FITTED — GO GO GO');
+    }
+  } else {
+    s.pitFrozen = false;
+  }
+}
+
 // the slip-angle dynamics need a finer timestep than 120 Hz to stay stable
 // at low speed, so each fixed step is integrated in three substeps
 function physStep(dt) {
+  updatePitState();
   const n = 3, h = dt / n;
   for (let k = 0; k < n; k++) physCore(h);
 }
@@ -710,11 +1042,16 @@ function physCore(dt) {
 
   const info = trackInfo(s.x, s.z, s.idx);
   s.idx = info.idx;
-  const onTrack = Math.abs(info.lateral) < HALF_W + KERB_W;
+  // the pit lane counts as tarmac even though it sits off the main track
+  const onTrack = Math.abs(info.lateral) < HALF_W + KERB_W || s.onPitLane;
   onTrackState = onTrack;
+  // tyre grip: compound grip × wear fall-off (steeper past the ~85% cliff),
+  // folded into the surface mu so worn tyres slide on tarmac and grass alike
+  const tc = TCOMP[s.tire.compound] || TCOMP.M;
+  const tireGrip = tc.grip * (1 - 0.16 * s.tire.wear) * (s.tire.wear > 0.85 ? 1 - (s.tire.wear - 0.85) * 0.8 : 1);
   // grass grip: reduced but not a cliff — brushing a wheel over the edge
   // shouldn't instantly snap the car around
-  const mu = onTrack ? MU : 0.85;
+  const mu = (onTrack ? MU : 0.85) * tireGrip;
 
   // --- driver input shaping: keyboard keys ramp like a foot on a pedal ---
   let thrIn = input.throttle, brkIn = input.brake;
@@ -808,6 +1145,13 @@ function physCore(dt) {
   if (!isFinite(rNew)) rNew = 0;
   if (!isFinite(vLatNew)) vLatNew = 0;
   vLong += (axNet + vLatNew * rNew) * dt;
+  // pit-lane speed limiter: hard cap on forward speed
+  if (s.pitLimiter && vLong > PIT_LIMIT) vLong = PIT_LIMIT;
+  // tyre wear: accrues with distance, faster under slip (sliding / lockups)
+  if (speed > 1) {
+    const slipFrac = Math.min(1, Math.abs(vLatNew) * 0.12 + Math.abs(alphaF) * 2.2 + Math.abs(alphaR) * 2.2);
+    s.tire.wear = Math.min(1, s.tire.wear + tc.wear * (0.00035 + 0.0016 * slipFrac) * dt);
+  }
 
   s.heading += rNew * dt;
   s.r = rNew;
@@ -820,10 +1164,10 @@ function physCore(dt) {
   s.x += s.vx * dt;
   s.z += s.vz * dt;
 
-  // soft barrier at ±(HALF_W+9)
+  // soft barrier at ±(HALF_W+9) — suspended on the pit lane, which lives beyond it
   const info2 = trackInfo(s.x, s.z, s.idx);
   const lim = HALF_W + 8.4;
-  if (Math.abs(info2.lateral) > lim) {
+  if (!s.onPitLane && Math.abs(info2.lateral) > lim) {
     const n = normals[info2.idx];
     const over = Math.abs(info2.lateral) - lim;
     const sgn = Math.sign(info2.lateral);
@@ -914,6 +1258,9 @@ addEventListener('keydown', e => {
       break;
     case 'KeyB': if (car.userData.imported) car.userData.imported.rotation.y += Math.PI / 2; break;
     case 'KeyM': muted = !muted; break;
+    case 'Digit1': state.nextCompound = 'S'; flashLap('NEXT STOP: SOFT'); break;
+    case 'Digit2': state.nextCompound = 'M'; flashLap('NEXT STOP: MEDIUM'); break;
+    case 'Digit3': state.nextCompound = 'H'; flashLap('NEXT STOP: HARD'); break;
   }
 });
 addEventListener('keyup', e => {
@@ -1074,6 +1421,25 @@ function updateHUD(speedKmh) {
     if (name) { el.textContent = name; el.style.opacity = 1; }
     else el.style.opacity = 0;
   }
+
+  // tyres + pit status
+  const tc = TCOMP[state.tire.compound] || TCOMP.M;
+  const wearPct = Math.round(state.tire.wear * 100);
+  $('tireComp').textContent = tc.short; $('tireComp').style.color = tc.col;
+  const tf = $('tireWearFill');
+  tf.style.width = Math.max(0, 100 - wearPct) + '%';
+  tf.style.background = wearPct > 80 ? '#e5342b' : wearPct > 55 ? '#e8c43a' : '#2ec26a';
+  $('tireWearPct').textContent = wearPct + '%';
+  $('tireNext').textContent = TCOMP[state.nextCompound].short;
+  const pm = $('pitmsg');
+  if (state.pitFrozen) {
+    pm.textContent = 'PIT STOP — ' + Math.max(0, PIT_STOP_TIME - state.pitService).toFixed(1) + 's';
+    pm.className = 'hud show stop';
+  } else if (state.pitLimiter) {
+    pm.textContent = '● PIT LIMITER ' + Math.round(PIT_LIMIT * 3.6);
+    pm.className = 'hud show lim';
+  } else pm.className = 'hud';
+
   return rpmFrac;
 }
 
@@ -1471,7 +1837,7 @@ const $id = id => document.getElementById(id);
 const idxAtProg = m => ((Math.round(m / STEP) % N) + N) % N;
 
 // menu selections + live session state
-const menu = { mode: 'race', laps: 5, qmin: 5 };
+const menu = { mode: 'race', laps: 5, qmin: 5, startGarage: false };
 const sess = { mode: 'menu', running: false, timeLeft: 0, laps: 5 };
 
 // race distance measured from the start line (negative while on the grid,
@@ -1483,6 +1849,10 @@ const playerRacePos = () => rivals.filter(r => rivalDist(r) > playerDist()).leng
 function clearPlayerLaps() {
   state.lap = 0; state.best = null; state.last = null; state.bestT = null;
   state.running = false; state.curT.fill(-1);
+  // fresh tyres of the chosen compound, and a clean pit state, each session
+  state.tire = { compound: state.nextCompound || 'M', wear: 0 };
+  state.pitRun = false; state.pitLimiter = false;
+  state.pitService = 0; state.pitServiced = false; state.pitFrozen = false;
 }
 function showTower(on) { $id('tower').classList.toggle('show', on); }
 
@@ -1602,6 +1972,15 @@ function updateSession(dt) {
 }
 
 // start menu wiring
+// place the car stopped in its pit box, limiter armed, ready to peel out
+function placeInGarage() {
+  const pb = pitBoxes[PLAYER_BOX], nd = pitPath[pb.k], t = tangents[nd.i];
+  state.x = nd.x; state.z = nd.z; state.idx = nd.i;
+  state.heading = Math.atan2(t[0], t[1]);
+  state.vx = state.vz = 0; state.r = 0; state.thr = 0; state.brk = 0; state.steer = 0;
+  state.pitK = pb.k; state.pitRun = true; state.pitLimiter = true;
+  state.pitServiced = true; state.pitService = 0; state.pitFrozen = false;
+}
 function startGame(mode) {
   $id('title').style.display = 'none';
   $id('results').classList.remove('show');
@@ -1609,8 +1988,9 @@ function startGame(mode) {
   if (mode === 'practice') {
     sess.mode = 'practice'; sess.running = false;
     rivalsGroup.visible = false; showTower(false);
-    state.idx = 0; resetCar(); clearPlayerLaps();
-    flashLap('PRACTICE — free running');
+    clearPlayerLaps();
+    if (menu.startGarage) { placeInGarage(); flashLap('IN THE GARAGE — drive out down the pit lane'); }
+    else { state.idx = 0; resetCar(); flashLap('PRACTICE — free running'); }
   } else if (mode === 'quali') {
     sess.mode = 'quali'; sess.running = true; sess.timeLeft = menu.qmin * 60;
     rivalsGroup.visible = true; showTower(true);
@@ -1637,11 +2017,14 @@ function backToMenu() {
     menu.mode = b.dataset.mode;
     $id('optRaceLaps').style.display = menu.mode === 'race' ? '' : 'none';
     $id('optQualiMin').style.display = menu.mode === 'quali' ? '' : 'none';
+    $id('optPractice').style.display = menu.mode === 'practice' ? '' : 'none';
   }));
   document.querySelectorAll('.seg').forEach(seg => seg.querySelectorAll('button').forEach(btn =>
     btn.addEventListener('click', () => {
       seg.querySelectorAll('button').forEach(x => x.classList.remove('on')); btn.classList.add('on');
-      if (seg.dataset.opt === 'laps') menu.laps = +btn.dataset.v; else menu.qmin = +btn.dataset.v;
+      if (seg.dataset.opt === 'laps') menu.laps = +btn.dataset.v;
+      else if (seg.dataset.opt === 'qmin') menu.qmin = +btn.dataset.v;
+      else if (seg.dataset.opt === 'start') menu.startGarage = btn.dataset.v === 'garage';
     })));
   $id('startBtn').addEventListener('click', () => startGame(menu.mode));
   $id('resultBtn').addEventListener('click', backToMenu);
@@ -1662,8 +2045,8 @@ function frame() {
   let dt = Math.min((now - lastT) / 1000, 0.1);
   lastT = now;
 
-  // hold the car on the grid until the lights go out
-  if (sess.mode === 'race' && sess.phase === 'lights') {
+  // hold the car on the grid until the lights go out — and in the box mid-stop
+  if ((sess.mode === 'race' && sess.phase === 'lights') || state.pitFrozen) {
     input.throttle = 0; input.brake = 0;
     state.vx = 0; state.vz = 0; state.thr = 0; state.r = 0;
   }
@@ -1771,6 +2154,7 @@ function frame() {
   }
 
   updateAudio(rpmFrac, input.throttle, speed);
+  updatePitStop(dt);
   updateSession(dt);
   drawMinimap();
 
@@ -1779,7 +2163,8 @@ function frame() {
 frame();
 
 // debug/testing hook
-window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival };
+window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
+  placeInGarage, updateHUD, pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
