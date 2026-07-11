@@ -1576,11 +1576,7 @@ addEventListener('keydown', e => {
     case 'KeyA': case 'ArrowLeft': input.left = true; break;
     case 'KeyD': case 'ArrowRight': input.right = true; break;
     case 'KeyR': resetCar(); break;
-    case 'KeyC':
-      if (prevCamMode !== null) { prevCamMode = (prevCamMode + 1) % 3; break; }  // adjust the view to return to
-      camMode = (camMode + 1) % 3; // chase -> cockpit -> nose pod
-      document.body.classList.toggle('cockpit', camMode >= 1);
-      break;
+    case 'KeyC': cycleCam(); break;   // chase -> cockpit -> nose pod
     case 'KeyV':
       tvMode = !tvMode;
       flashLap(tvMode ? 'BROADCAST CAMERAS' : 'DRIVER CAMERA');
@@ -2715,13 +2711,22 @@ function backToMenu() {
 // fullscreen: hides the mobile browser chrome (address bar) in landscape.
 // Works on Android; on iOS use "Add to Home Screen" (web-app meta handles that).
 const _fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+const _canFS = () => document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
 function goFullscreen() {
-  const el = document.documentElement, req = el.requestFullscreen || el.webkitRequestFullscreen;
+  const el = document.documentElement, req = _canFS();
   if (req && !_fsEl()) { try { const p = req.call(el); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
 }
 function toggleFullscreen() {
-  if (_fsEl()) { (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document); }
+  if (!_canFS()) { flashLap('iPhone: tap Share, then "Add to Home Screen" and open it from the icon for fullscreen'); return; }
+  if (_fsEl()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
   else goFullscreen();
+}
+// cycle the driving camera (chase → cockpit → nose); if a cinematic has taken
+// over, change the view we'll return to afterwards instead
+function cycleCam() {
+  if (prevCamMode !== null) { prevCamMode = (prevCamMode + 1) % 3; return; }
+  camMode = (camMode + 1) % 3;
+  document.body.classList.toggle('cockpit', camMode >= 1);
 }
 
 {
@@ -2770,6 +2775,7 @@ if (IS_TOUCH) document.body.classList.add('touch');
   tap('tcReset', () => resetCar());
   tap('tcMenu', () => backToMenu());
   tap('tcFull', () => toggleFullscreen());
+  tap('tcCam', () => cycleCam());
 }
 
 // ---------------------------------------------------------------------------
