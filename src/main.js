@@ -1172,9 +1172,9 @@ gltfLoader.load('/wheel.glb', g => {
   const wheelGroup = car.userData.steeringWheel;
   for (const part of car.userData.wheelPrimitives) part.visible = false;
   wheelGroup.add(flip);
-  // seat the wheel inside the cockpit where the model puts it:
-  // above the chassis line, forward of the headrest (measured from the model)
-  wheelGroup.position.set(0, 0.78, 0.74);
+  // seat the wheel inside the cockpit close to the driver — clearly behind
+  // the halo strut so the two never overlap in cockpit view
+  wheelGroup.position.set(0, 0.76, 0.58);
   // seat the live LCD into the model's screen bezel: match the column rake,
   // shrink to the screen cutout, and drop the redundant procedural LEDs
   // (the model has its own baked light strip)
@@ -1248,7 +1248,7 @@ function frame() {
   } else if (camMode === 1) {
     // cockpit: helmet-cam framing — close behind the wheel, pitched
     // slightly down so the wheel fills the lower half under the halo
-    target = new THREE.Vector3(state.x + fwdX * 0.06, info.y + 0.90, state.z + fwdZ * 0.06);
+    target = new THREE.Vector3(state.x - fwdX * 0.10, info.y + 0.92, state.z - fwdZ * 0.10);
   } else {
     // nose pod: the higher over-cockpit view
     target = new THREE.Vector3(state.x - fwdX * 0.15, info.y + 1.26, state.z - fwdZ * 0.15);
