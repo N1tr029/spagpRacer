@@ -1,12 +1,22 @@
-# Ardennes GP — Spa-Francorchamps Time Trial
+# Ardennes GP
 
-A browser racing game on the real Circuit de Spa-Francorchamps, built with
-Three.js and open data. Chase the delta, beat your best lap.
+**A browser racing game on the real Circuit de Spa-Francorchamps** — built with
+Three.js, an original 120 Hz physics model, and open geodata. Qualify against a
+field of rivals, then race them over the real Ardennes layout with true LiDAR
+elevation. Runs in any modern browser, no install.
 
-All code and built-in art are original. The game is not affiliated with and
-contains no assets from Formula 1, F1 25, EA, or Codemasters. Optional
-drop-in slots let you play with your own car model, steering wheel, track
-textures, and engine audio (see **Bring your own assets**).
+![Cockpit view at Spa](screenshots/cockpit.jpg)
+
+<p align="center"><em>Halo onboard view — live wheel &amp; LCD, the real circuit ahead</em></p>
+
+![Racing the field](screenshots/race.jpg)
+
+<p align="center"><em>Chasing the pack down the Kemmel straight</em></p>
+
+> All code and built-in art are original. Not affiliated with and containing no
+> assets from Formula 1, F1 25, EA, or Codemasters. Drop-in slots let you play
+> with your own car, wheel, textures, and engine sound — see
+> [Bring your own assets](#bring-your-own-assets).
 
 ## Quick start
 
@@ -15,7 +25,21 @@ npm install
 npm run dev        # open the printed localhost URL
 ```
 
-Press any key to start your engine.
+Pick a mode from the start menu and go.
+
+## Modes
+
+Chosen from the start menu:
+
+- **Quick Race** — straight to a standing-start race against eight rivals over
+  3, 5, or 10 laps. You start at the back; carve your way forward.
+- **Quali + Race** — a qualifying session (3, 5, or 8 minutes, your pick) sets
+  your grid slot against the field, then rolls straight into the race.
+- **Practice** — free running, no clock, just you and the circuit.
+
+A live timing tower ranks the field; in the race it tracks position and laps,
+in qualifying it shows the lap-time order. Finish a race and you're classified
+on the results screen.
 
 ## Controls
 
@@ -27,72 +51,58 @@ Press any key to start your engine.
 | C | Camera: chase → cockpit → nose |
 | L | Racing line on/off |
 | X | Assists (auto-brake + traction) on/off |
-| Q | Qualifying mode on/off |
-| O | Cockpit setup panel |
+| O | Cockpit setup panel (wheel & seat sliders) |
 | R | Reset to track |
+| Esc | Back to menu |
 | M | Mute |
-
-Lap timing starts at the finish line. LAST/BEST and a live delta to your
-best lap show top-left; corner names flash as you reach them.
-
-## Modes
-
-- **Practice** (default) — free running; set and beat your own best lap.
-- **Qualifying** (press **Q**) — an 8-minute session against a field of
-  eight rival cars circulating the racing line at fixed target paces. A live
-  timing tower ranks the field; your best lap sets your grid slot, and when
-  the clock hits zero you're classified P1–P9. Rivals are visual
-  pace-setters (no contact).
 
 ## Track accuracy
 
-- **Layout** — real centerline stitched from the OpenStreetMap circuit
-  relation (31 raceway segments: Eau Rouge, Raidillon, Kemmel, Pouhon,
-  Blanchimont, …). Measured 6,995 m vs the real 7,004 m (~0.1% error).
-  Map data © OpenStreetMap contributors, ODbL.
+- **Layout** — real centerline stitched from the OpenStreetMap circuit relation
+  (31 raceway segments: Eau Rouge, Raidillon, Kemmel, Pouhon, Blanchimont, …).
+  Measured 6,995 m vs the real 7,004 m (~0.1% error). Map data ©
+  OpenStreetMap contributors, ODbL.
 - **Elevation** — true heights sampled per track point from the Walloon
-  Region's open 50 cm LiDAR terrain model (MNT 2021–2022,
-  geoservices.wallonie.be): 102 m of real elevation change, including the
-  Eau Rouge compression and the 41 m Raidillon climb.
+  Region's open 50 cm LiDAR terrain model (MNT 2021–2022): 102 m of real
+  elevation change, including the Eau Rouge compression and the 41 m Raidillon
+  climb.
 - **Corner names** — from the OSM segment names, shown live as you drive.
 
-The processed track (centerline, widths, elevation, corner names) ships in
-`src/track.json`, so no network access or data rebuild is needed to play.
+The processed track ships in `src/track.json`, so no network access or data
+rebuild is needed to play.
 
 ## Physics
 
-Original single-track (bicycle) model at 120 Hz: slip-angle tire forces with
-a friction circle, aero downforce and drag, brake/throttle load transfer,
-7-speed gearbox. Assists (on by default) manage braking points and traction
-so anyone can lap; turn them off with X for the full challenge. Off-track
-excursions cost grip; barriers are soft.
+Original single-track (bicycle) model at 120 Hz: slip-angle tire forces with a
+friction circle, aero downforce and drag, brake/throttle load transfer, a
+7-speed gearbox. Assists (on by default) manage braking points and traction so
+anyone can lap; turn them off with **X** for the full challenge.
 
-Onboard extras: cockpit camera under the halo with animated steering wheel
-and live LCD, rubbered-in racing groove, armco with catch fencing, painted
-runoff, grandstand, gantries, brake markers, live minimap, and
-delta-to-best timing at every 4 m checkpoint.
+## Cockpit setup
+
+Press **O** for a live setup panel that saves to your browser:
+
+- **Wheel** — move the steering wheel in X / Y / Z to fit the car
+- **Driver** — seat fore/aft, eye height, view pitch, and field of view
 
 ## Bring your own assets
 
-The game works fully with its built-in low-poly car, procedural wheel,
-painted track, and synthesized V6 engine. Drop any of these files into
-`public/` to upgrade the look and sound — each is optional and auto-detected:
+The game is complete with its built-in low-poly car, procedural wheel, tarmac,
+and synthesized V6 engine. Drop any of these into `public/` to upgrade — each
+is optional and auto-detected:
 
 | File | What it does |
 |------|--------------|
-| `public/car.glb` | Replaces the built-in car (~5.6 m long, +Z forward). Name wheel meshes `FL_Wheel`, `FR_Wheel`, `RL_Wheel`, `RR_Wheel` to get spin + steering; optional `FL_Cover`/`FR_Cover` aero covers steer without spinning. |
-| `public/wheel.glb` | Replaces the procedural steering wheel in cockpit view; the live LCD is composited onto its screen area. |
-| `public/textures/road.png` | Tiling asphalt for the track ribbon. |
+| `public/car.glb` | Replaces the car (~5.6 m, +Z forward). Name wheel meshes `FL_Wheel`, `FR_Wheel`, `RL_Wheel`, `RR_Wheel` for spin + steering; optional `FL_Cover`/`FR_Cover` aero covers steer without spinning. The model is auto-leveled to the track from its wheel centers. |
+| `public/wheel.glb` | Replaces the cockpit steering wheel; the live LCD composites onto its screen. |
+| `public/textures/road.png` | Tiling asphalt for the track. |
 | `public/textures/grass.png` | Tiling grass for shoulders and terrain. |
-| `public/engine.wav` | Looping engine recording, pitch-shifted with the revs (replaces the synth). |
+| `public/engine.wav` | Looping engine recording, pitch-shifted with the revs. |
 
-Sketchfab and similar sites have downloadable F1-style cars and wheels;
-free engine loops exist on freesound.org. **Check each asset's license
-yourself** — most model licenses allow personal use but not redistribution,
-which is why none are included here.
+**Check each asset's license yourself** — most model licenses allow personal
+use but not redistribution, which is why none are bundled here.
 
 ## License
 
-Code: MIT (see `LICENSE`). Track geometry derives from OpenStreetMap
-(© OpenStreetMap contributors, ODbL) and Service public de Wallonie open
-geodata.
+Code: MIT (see `LICENSE`). Track geometry derives from OpenStreetMap (©
+OpenStreetMap contributors, ODbL) and Service public de Wallonie open geodata.

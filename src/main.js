@@ -44,7 +44,7 @@ for (let i = 0; i < N; i++) {
 // ---------------------------------------------------------------------------
 // Renderer / scene
 // ---------------------------------------------------------------------------
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
@@ -142,16 +142,13 @@ function addRibbonUVs(mesh, uStart, uEnd, vMeters) {
   // baked-in white edge lines so the whole surface reads as uniform tar
   addRibbonUVs(road, 0.20, 0.80, 9);
   surfaceTex('/textures/road.png', t => {
-    road.material = new THREE.MeshStandardMaterial({ map: t, roughness: 0.95 });
+    // dark tint pulls the medium-grey photo asphalt toward real charcoal tar
+    road.material = new THREE.MeshStandardMaterial({ map: t, color: 0x5f6469, roughness: 0.97 });
   });
   scene.add(road);
 }
 
-// rubbered-in racing groove down the middle of the road
-scene.add(buildRibbon(i => 2.1, i => -2.1, 0.008, i => {
-  const v = 0.115 + asphaltTone[i] * 0.035;
-  return { r: v, g: v, b: v + 0.006 };
-}));
+// (racing groove removed — the road stays one uniform tarmac tone)
 
 // racing line driving aid: follows the computed out-in-out line, colored
 // green (flat out) / yellow (cornering) / red (braking zone). Toggle: L
@@ -191,7 +188,7 @@ for (const side of [1, -1]) {
     i => side * (RUNOFF(i) ? HALF_W + KERB_W + 4.5 : HALF_W + KERB_W + 0.001),
     i => side * (HALF_W + KERB_W),
     0.02,
-    i => { const v = 0.22 + asphaltTone[i] * 0.05; return { r: v, g: v, b: v }; }));
+    i => { const v = 0.15 + asphaltTone[i] * 0.03; return { r: v, g: v, b: v + 0.004 }; }));
   scene.add(buildRibbon(
     i => side * (RUNOFF(i) ? HALF_W + KERB_W + 6.3 : HALF_W + KERB_W + 4.5 + 0.001),
     i => side * (RUNOFF(i) ? HALF_W + KERB_W + 4.5 : HALF_W + KERB_W + 4.5),
@@ -870,7 +867,11 @@ function resetCar() {
 // ---------------------------------------------------------------------------
 let started = false, muted = false, camMode = 0, assistsOn = true;
 addEventListener('keydown', e => {
-  if (!started) { started = true; document.getElementById('title').style.display = 'none'; initAudio(); }
+  // while the start menu is up, only Enter launches the selected mode
+  if (!started || sess.mode === 'menu') {
+    if (e.code === 'Enter') startGame(menu.mode);
+    return;
+  }
   switch (e.code) {
     case 'KeyW': case 'ArrowUp': input.throttle = 1; break;
     case 'KeyS': case 'ArrowDown': input.brake = 1; break;
@@ -884,8 +885,8 @@ addEventListener('keydown', e => {
     case 'KeyO':
       toggleSettings();
       break;
-    case 'KeyQ':
-      setQuali(!quali.on);
+    case 'Escape':
+      backToMenu();
       break;
     case 'KeyL': raceLine.visible = !raceLine.visible; break;
     case 'KeyH': car.userData.halo.visible = !car.userData.halo.visible; break;
@@ -1285,19 +1286,19 @@ addEventListener('drop', e => {
 });
 
 // ---------------------------------------------------------------------------
-// Rivals & Qualifying mode (key Q) — a field of cars circulating the racing
-// line at fixed target paces, plus a session clock and live timing tower.
-// Rivals are visual pace-setters (no collision), like on-track ghosts.
+// Field, modes & sessions — Practice / Qualifying / Race, driven by the start
+// menu. Rivals circulate the racing line at fixed paces (visual pace-setters,
+// no collision). Positions rank by distance covered.
 // ---------------------------------------------------------------------------
 const RIVALS_DEF = [
-  { name: 'VER', color: 0x1f3a93, lap: 135.4 },
-  { name: 'LEC', color: 0xd42020, lap: 136.6 },
-  { name: 'RUS', color: 0x00a19c, lap: 137.5 },
-  { name: 'PIA', color: 0xff8000, lap: 138.2 },
-  { name: 'SAI', color: 0xd42020, lap: 139.0 },
-  { name: 'ALO', color: 0x0a7d68, lap: 139.9 },
-  { name: 'HAM', color: 0x00a19c, lap: 140.8 },
-  { name: 'GAS', color: 0x2f6fb0, lap: 142.0 },
+  { name: 'VER', color: 0x1f3a93, lap: 136.0 },
+  { name: 'LEC', color: 0xd42020, lap: 137.6 },
+  { name: 'RUS', color: 0x00a19c, lap: 139.2 },
+  { name: 'PIA', color: 0xff8000, lap: 140.8 },
+  { name: 'SAI', color: 0xd42020, lap: 142.4 },
+  { name: 'ALO', color: 0x0a7d68, lap: 144.2 },
+  { name: 'HAM', color: 0x00a19c, lap: 146.0 },
+  { name: 'GAS', color: 0x2f6fb0, lap: 148.0 },
 ];
 function makeRivalCar(color) {
   const grp = new THREE.Group();
@@ -1321,13 +1322,14 @@ function makeRivalCar(color) {
 const rivalsGroup = new THREE.Group();
 rivalsGroup.visible = false;
 scene.add(rivalsGroup);
-const rivals = RIVALS_DEF.map((def, i) => {
+// each rival tracks a monotonic progress u (in laps) so laps/positions work
+const rivals = RIVALS_DEF.map((def) => {
   const mesh = makeRivalCar(def.color);
   rivalsGroup.add(mesh);
-  return { def, mesh, prog: i / RIVALS_DEF.length, lap: def.lap };
+  return { def, mesh, u: 0 };
 });
 function placeRival(r) {
-  const f = (((r.prog % 1) + 1) % 1) * N;
+  const f = (((r.u % 1) + 1) % 1) * N;
   const i0 = Math.floor(f) % N, i1 = (i0 + 1) % N, frac = f - Math.floor(f);
   const a = P(i0), b = P(i1), n = normals[i0], lat = RACE[i0];
   const cx = a[0] + (b[0] - a[0]) * frac + n[0] * lat;
@@ -1335,56 +1337,160 @@ function placeRival(r) {
   r.mesh.position.set(cx, trackInfo(cx, cz, i0).y, cz);
   r.mesh.rotation.y = Math.atan2(b[0] - a[0], b[2] - a[2]);
 }
-rivals.forEach(placeRival);
 
 const fmtShort = ms => !isFinite(ms) ? '—'
   : `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${Math.floor((ms % 1000) / 100)}`;
-const QUALI_SECS = 8 * 60;
-const quali = { on: false, running: false, timeLeft: QUALI_SECS };
-function setQuali(on) {
-  quali.on = on; quali.running = on; quali.timeLeft = QUALI_SECS;
-  rivalsGroup.visible = on;
-  document.getElementById('tower').classList.toggle('show', on);
-  if (on) {
-    for (const r of rivals) r.lap = r.def.lap * (0.997 + Math.random() * 0.006);
-    state.idx = 0; resetCar();
-    state.best = null; state.last = null; state.bestT = null; state.lap = 0;
-    state.running = false; state.curT.fill(-1);
-    flashLap('QUALIFYING — 8:00 on the clock — set your fastest lap');
-  } else flashLap('PRACTICE — free running');
-  updateModeBar();
+const $id = id => document.getElementById(id);
+const idxAtProg = m => ((Math.round(m / STEP) % N) + N) % N;
+
+// menu selections + live session state
+const menu = { mode: 'race', laps: 5, qmin: 5 };
+const sess = { mode: 'menu', running: false, timeLeft: 0, laps: 5 };
+
+const playerDist = () => state.lap * TRACK_LEN + state.prog;
+const rivalDist = r => r.u * TRACK_LEN;
+const playerRacePos = () => rivals.filter(r => rivalDist(r) > playerDist()).length + 1;
+
+function clearPlayerLaps() {
+  state.lap = 0; state.best = null; state.last = null; state.bestT = null;
+  state.running = false; state.curT.fill(-1);
 }
+function showTower(on) { $id('tower').classList.toggle('show', on); }
+
+function startRace(playerGrid) {
+  sess.mode = 'race'; sess.running = true; sess.laps = menu.laps;
+  rivalsGroup.visible = true; showTower(true);
+  // pole = fastest; player slots in at playerGrid (default: the back)
+  const order = rivals.slice().sort((a, b) => a.def.lap - b.def.lap);
+  const pg = playerGrid != null ? playerGrid : rivals.length;
+  const field = [];
+  let ri = 0;
+  for (let slot = 0; slot <= rivals.length; slot++) field.push(slot === pg ? 'player' : order[ri++]);
+  const FIELD = field.length;
+  field.forEach((ent, slot) => {
+    const gridProg = (FIELD - 1 - slot) * 7 + 6; // metres up the road; pole furthest
+    if (ent === 'player') {
+      state.idx = idxAtProg(gridProg); resetCar();
+      clearPlayerLaps(); state.prog = gridProg;
+    } else { ent.u = gridProg / TRACK_LEN; placeRival(ent); }
+  });
+  flashLap(`RACE — ${menu.laps} laps — GO!`);
+  updateModeBar(); updateTower();
+}
+
+function qualiSlot() {
+  const pb = state.best || Infinity;
+  return rivals.filter(r => r.def.lap * 1000 < pb).length; // 0 = pole
+}
+function endQuali() {
+  sess.running = false;
+  const slot = qualiSlot();
+  flashLap(state.best ? `QUALIFYING OVER — you start P${slot + 1} — lights out!` : 'NO LAP SET — starting at the back');
+  startRace(slot);
+}
+function endRace() {
+  sess.running = false;
+  const order = rivals.map(r => ({ name: r.def.name, dist: rivalDist(r), you: false }))
+    .concat([{ name: 'YOU', dist: playerDist(), you: true }])
+    .sort((a, b) => b.dist - a.dist);
+  const pos = order.findIndex(e => e.you) + 1;
+  $id('resultPos').textContent = 'P' + pos;
+  $id('resultGrid').innerHTML = order.map((e, i) =>
+    `<div class="r${e.you ? ' you' : ''}"><span class="p">P${i + 1}</span><span class="n">${e.name}</span></div>`).join('');
+  $id('results').classList.add('show');
+}
+
 function updateModeBar() {
-  const el = document.getElementById('modebar');
-  if (!quali.on) { el.textContent = 'PRACTICE'; return; }
-  const t = Math.max(0, quali.timeLeft);
-  el.innerHTML = `<span class="q">QUALIFYING</span><span class="clock">${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}</span>`;
+  const el = $id('modebar');
+  if (sess.mode === 'practice') { el.textContent = 'PRACTICE'; return; }
+  if (sess.mode === 'quali') {
+    const t = Math.max(0, sess.timeLeft);
+    el.innerHTML = `<span class="q">QUALIFYING</span><span class="clock">${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}</span>`;
+  } else if (sess.mode === 'race') {
+    const lap = Math.min(state.lap + 1, sess.laps);
+    el.innerHTML = `<span class="q">RACE</span><span class="clock">LAP ${lap}/${sess.laps} · P${playerRacePos()}</span>`;
+  }
+}
+function towerRow(pos, color, name, right, you) {
+  return `<div class="r${you ? ' you' : ''}"><span class="pos">${pos}</span>`
+    + `<span class="dot" style="background:#${color.toString(16).padStart(6, '0')}"></span>`
+    + `<span class="nm">${name}</span><span class="tm">${right}</span></div>`;
 }
 function updateTower() {
-  const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, ms: r.lap * 1000, you: false }));
-  rows.push({ name: 'YOU', color: 0xffffff, ms: state.best || Infinity, you: true });
-  rows.sort((a, b) => a.ms - b.ms);
-  document.getElementById('tower').innerHTML = '<div class="th">QUALIFYING</div>' + rows.map((r, i) =>
-    `<div class="r${r.you ? ' you' : ''}"><span class="pos">${i + 1}</span>`
-    + `<span class="dot" style="background:#${r.color.toString(16).padStart(6, '0')}"></span>`
-    + `<span class="nm">${r.name}</span><span class="tm">${fmtShort(r.ms)}</span></div>`).join('');
+  const el = $id('tower');
+  if (sess.mode === 'race') {
+    const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, dist: rivalDist(r), laps: Math.floor(r.u), you: false }));
+    rows.push({ name: 'YOU', color: 0xffffff, dist: playerDist(), laps: state.lap, you: true });
+    rows.sort((a, b) => b.dist - a.dist);
+    el.innerHTML = '<div class="th">RACE ORDER</div>' + rows.map((r, i) =>
+      towerRow(i + 1, r.color, r.name, 'L' + Math.max(1, r.laps + 1), r.you)).join('');
+  } else if (sess.mode === 'quali') {
+    const rows = rivals.map(r => ({ name: r.def.name, color: r.def.color, ms: r.def.lap * 1000, you: false }));
+    rows.push({ name: 'YOU', color: 0xffffff, ms: state.best || Infinity, you: true });
+    rows.sort((a, b) => a.ms - b.ms);
+    el.innerHTML = '<div class="th">QUALIFYING</div>' + rows.map((r, i) =>
+      towerRow(i + 1, r.color, r.name, fmtShort(r.ms), r.you)).join('');
+  }
 }
-function updateQuali(dt) {
-  if (!quali.on) return;
-  if (quali.running) {
-    quali.timeLeft -= dt;
-    for (const r of rivals) { r.prog += dt / r.lap; placeRival(r); }
-    if (quali.timeLeft <= 0) {
-      quali.timeLeft = 0; quali.running = false;
-      const rows = rivals.map(r => ({ n: r.def.name, ms: r.lap * 1000 }));
-      rows.push({ n: 'YOU', ms: state.best || Infinity });
-      rows.sort((a, b) => a.ms - b.ms);
-      const p = rows.findIndex(x => x.n === 'YOU') + 1;
-      flashLap(state.best ? `SESSION OVER — you qualified P${p}  (${fmt(state.best)})` : 'SESSION OVER — no lap set');
+function updateSession(dt) {
+  if (sess.mode === 'menu') return;
+  if (sess.running && sess.mode !== 'practice') {
+    for (const r of rivals) { r.u += dt / r.def.lap; placeRival(r); }
+    if (sess.mode === 'quali') {
+      sess.timeLeft -= dt;
+      if (sess.timeLeft <= 0) { sess.timeLeft = 0; endQuali(); }
+    } else if (sess.mode === 'race' && state.lap >= sess.laps) {
+      endRace(); sess.running = false;
     }
   }
   updateModeBar();
-  updateTower();
+  if (sess.mode !== 'practice') updateTower();
+}
+
+// start menu wiring
+function startGame(mode) {
+  $id('title').style.display = 'none';
+  $id('results').classList.remove('show');
+  if (!started) { started = true; initAudio(); }
+  if (mode === 'practice') {
+    sess.mode = 'practice'; sess.running = false;
+    rivalsGroup.visible = false; showTower(false);
+    state.idx = 0; resetCar(); clearPlayerLaps();
+    flashLap('PRACTICE — free running');
+  } else if (mode === 'quali') {
+    sess.mode = 'quali'; sess.running = true; sess.timeLeft = menu.qmin * 60;
+    rivalsGroup.visible = true; showTower(true);
+    rivals.forEach((r, i) => { r.u = Math.random(); placeRival(r); });
+    state.idx = 0; resetCar(); clearPlayerLaps();
+    flashLap(`QUALIFYING — ${menu.qmin}:00 — set your fastest lap`);
+  } else {
+    startRace(null);
+  }
+  updateModeBar();
+}
+function backToMenu() {
+  sess.mode = 'menu'; sess.running = false;
+  rivalsGroup.visible = false; showTower(false);
+  $id('results').classList.remove('show');
+  $id('title').style.display = 'flex';
+  state.idx = 0; resetCar(); clearPlayerLaps();
+  $id('modebar').textContent = '';
+}
+{
+  const modes = document.querySelectorAll('.modes .mode');
+  modes.forEach(b => b.addEventListener('click', () => {
+    modes.forEach(x => x.classList.remove('active')); b.classList.add('active');
+    menu.mode = b.dataset.mode;
+    $id('optRaceLaps').style.display = menu.mode === 'race' ? '' : 'none';
+    $id('optQualiMin').style.display = menu.mode === 'quali' ? '' : 'none';
+  }));
+  document.querySelectorAll('.seg').forEach(seg => seg.querySelectorAll('button').forEach(btn =>
+    btn.addEventListener('click', () => {
+      seg.querySelectorAll('button').forEach(x => x.classList.remove('on')); btn.classList.add('on');
+      if (seg.dataset.opt === 'laps') menu.laps = +btn.dataset.v; else menu.qmin = +btn.dataset.v;
+    })));
+  $id('startBtn').addEventListener('click', () => startGame(menu.mode));
+  $id('resultBtn').addEventListener('click', backToMenu);
 }
 
 // ---------------------------------------------------------------------------
@@ -1506,7 +1612,7 @@ function frame() {
   }
 
   updateAudio(rpmFrac, input.throttle, speed);
-  updateQuali(dt);
+  updateSession(dt);
   drawMinimap();
 
   renderer.render(scene, camera);
@@ -1514,7 +1620,7 @@ function frame() {
 frame();
 
 // debug/testing hook
-window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep };
+window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival };
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
