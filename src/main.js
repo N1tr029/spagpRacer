@@ -2006,7 +2006,7 @@ gltfLoader.load(ASSET + 'wheel.glb', g => {
 }, undefined, () => {});
 
 // ---------- cockpit setup panel (key O): wheel XYZ + driver eye tuning ----------
-const CFG_DEF = { wx: 0, wy: 0.76, wz: 0.58, camBack: 0.10, camUp: 0.92, pitch: 0.12, fov: 66 };
+const CFG_DEF = { wx: -0.005, wy: 0.66, wz: 0.58, camBack: 0.265, camUp: 0.855, pitch: 0.12, fov: 66 };
 let cfg = { ...CFG_DEF };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('ardennes.cockpit') || '{}')); } catch { /* fresh defaults */ }
 function saveCfg() { localStorage.setItem('ardennes.cockpit', JSON.stringify(cfg)); }
