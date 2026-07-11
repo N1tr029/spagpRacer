@@ -7,7 +7,7 @@ elevation. Runs in any modern browser, no install.
 
 ![Cockpit view at Spa](screenshots/cockpit.jpg)
 
-<p align="center"><em>Halo onboard view — live wheel &amp; LCD, the real circuit ahead</em></p>
+<p align="center"><em>Cockpit race view at Eau Rouge — live wheel, LCD, and race order</em></p>
 
 ![Racing the field](screenshots/race.jpg)
 
