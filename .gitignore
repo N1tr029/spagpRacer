@@ -1,0 +1,18 @@
+# deps / build
+node_modules/
+dist/
+
+# personal drop-in assets — licensed content, not redistributable
+public/car.glb
+public/wheel.glb
+public/engine.wav
+public/textures/
+
+# OSM/LiDAR build intermediates (processed result ships in src/track.json)
+spa_raw.json
+spa_rel.json
+spa_ways.json
+spa_stands.json
+spa_centerline.json
+
+.DS_Store

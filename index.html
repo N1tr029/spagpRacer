@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ardennes GP — Spa-Francorchamps Time Trial</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0d12; font-family: "Helvetica Neue", Arial, sans-serif; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+  .hud { position: fixed; color: #fff; user-select: none; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+
+  #speedo { right: 28px; bottom: 24px; text-align: right; }
+  #speed { font-size: 64px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  #speedUnit { font-size: 14px; letter-spacing: 2px; opacity: .7; }
+  #gear { font-size: 30px; font-weight: 700; color: #ffd34d; margin-top: 2px; }
+  #rpmbar { width: 220px; height: 8px; background: rgba(255,255,255,.15); border-radius: 4px; margin: 8px 0 4px auto; overflow: hidden; }
+  #rpmfill { height: 100%; width: 0%; background: linear-gradient(90deg,#2ecc71,#f1c40f,#e74c3c); }
+
+  #timing { left: 28px; top: 24px; font-variant-numeric: tabular-nums; }
+  #timing .lap-current { font-size: 34px; font-weight: 800; }
+  #timing .row { font-size: 15px; opacity: .85; margin-top: 2px; }
+  #timing .label { display: inline-block; width: 52px; opacity: .6; font-size: 12px; letter-spacing: 1px; }
+  #lapflash { position: fixed; top: 100px; left: 28px; font-size: 22px; font-weight: 800; color: #a3f7bf; opacity: 0; transition: opacity .4s; }
+
+  #cornerName { left: 50%; transform: translateX(-50%); bottom: 110px; font-size: 26px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; color: #fff; background: rgba(15,20,30,.55); padding: 6px 22px; border-radius: 6px; border-left: 5px solid #e10600; opacity: 0; transition: opacity .3s; }
+
+  #minimap { position: fixed; right: 24px; top: 24px; opacity: .92; }
+
+  #offtrack { left: 50%; transform: translateX(-50%); top: 90px; font-size: 18px; font-weight: 700; color: #ffb84d; opacity: 0; }
+
+  #help { left: 28px; bottom: 20px; font-size: 12.5px; line-height: 1.7; opacity: .55; }
+  #help b { color: #ffd34d; }
+
+  #title { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; background: rgba(6,9,14,.82); z-index: 10; color: #fff; text-align: center; }
+  #title h1 { font-size: 44px; margin: 0 0 6px; letter-spacing: 2px; }
+  #title h1 span { color: #e10600; }
+  #title p { opacity: .75; margin: 4px 0; font-size: 15px; }
+  #title .go { margin-top: 26px; font-size: 20px; font-weight: 700; color: #a3f7bf; animation: pulse 1.4s infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+
+  #cockpitVignette { position: fixed; inset: 0; pointer-events: none; display: none; z-index: 2;
+    background: radial-gradient(ellipse 90% 75% at 50% 58%, transparent 52%, rgba(8,10,13,.45) 80%, rgba(4,5,7,.82) 100%); }
+  body.cockpit #cockpitVignette { display: block; }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="cockpitVignette"></div>
+  <div id="title">
+    <h1>ARDENNES <span>GP</span></h1>
+    <p>Circuit de Spa-Francorchamps &mdash; 7.0 km &middot; real layout &amp; elevation from OpenStreetMap</p>
+    <p>Time Trial &mdash; beat your best lap</p>
+    <div class="go">Press any key to start your engine</div>
+  </div>
+  <div class="hud" id="speedo">
+    <div id="rpmbar"><div id="rpmfill"></div></div>
+    <div id="rpm" style="font-size:13px;opacity:.65;font-variant-numeric:tabular-nums">0 RPM</div>
+    <div id="speed">0</div>
+    <div id="speedUnit">KM/H</div>
+    <div id="gear">N</div>
+  </div>
+  <div class="hud" id="timing">
+    <div class="lap-current" id="lapTime">0:00.000</div>
+    <div id="delta" style="font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;min-height:24px"></div>
+    <div class="row"><span class="label">LAST</span><span id="lastLap">—</span></div>
+    <div class="row"><span class="label">BEST</span><span id="bestLap">—</span></div>
+    <div class="row"><span class="label">LAP</span><span id="lapCount">0</span></div>
+  </div>
+  <div class="hud" id="lapflash"></div>
+  <div class="hud" id="cornerName"></div>
+  <div class="hud" id="offtrack">OFF TRACK — reduced grip</div>
+  <canvas id="minimap" width="190" height="190"></canvas>
+  <div class="hud" id="help">
+    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>M</b> mute
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
