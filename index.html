@@ -56,6 +56,10 @@
     padding: 15px 0; font-size: 17px; font-weight: 800; letter-spacing: 1.5px; cursor: pointer; }
   #startBtn:hover { background: #24d466; }
   #title .go { margin-top: 12px; font-size: 12px; opacity: .5; }
+  #credits { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 10.5px;
+    opacity: .45; line-height: 1.6; padding: 0 20px; pointer-events: auto; }
+  #credits a { color: #9cc4ff; text-decoration: none; }
+  #credits a:hover { text-decoration: underline; }
 
   #results { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column;
     background: rgba(6,9,14,.78); z-index: 11; color: #fff; text-align: center; }
@@ -222,6 +226,13 @@
       </div>
       <button id="startBtn">START ENGINE &#9654;</button>
       <div class="go">or press Enter</div>
+    </div>
+    <div id="credits">
+      3D models via Sketchfab:
+      <a href="https://sketchfab.com/3d-models/f1-2025-mclaren-mcl39-c6194270002b401bb25be7e35ab56e34" target="_blank" rel="noopener">McLaren MCL39</a>
+      &middot;
+      <a href="https://sketchfab.com/3d-models/f1-steering-wheel-w11-97e6f81365714a78a784c4bc92903b7b" target="_blank" rel="noopener">F1 W11 steering wheel</a>
+      &nbsp;&middot;&nbsp; Track &amp; forest data &copy; OpenStreetMap contributors (ODbL)
     </div>
   </div>
   <div id="results">
