@@ -2230,18 +2230,23 @@ scene.add(gridBoxes);
 {
   const cv = document.createElement('canvas'); cv.width = 64; cv.height = 140;
   const g2 = cv.getContext('2d');
-  g2.strokeStyle = 'rgba(255,255,255,0.92)'; g2.lineWidth = 6;
+  g2.strokeStyle = 'rgba(235,235,235,0.72)'; g2.lineWidth = 6;   // matte paint (less bloom glow)
   g2.strokeRect(5, 5, 54, 100);                       // start box
-  g2.fillStyle = 'rgba(255,255,255,0.92)'; g2.fillRect(26, 108, 12, 26); // stub line
+  g2.fillStyle = 'rgba(235,235,235,0.72)'; g2.fillRect(26, 108, 12, 26); // stub line
   const tex = new THREE.CanvasTexture(cv);
   const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
   const geo = new THREE.PlaneGeometry(2.4, 6.0);
   for (let slot = 0; slot < FIELD_N; slot++) {
     const p = poseAtGrid(gridProgOf(slot), gridLatOf(slot));
+    // yaw a holder to the track heading (same as the cars), lay the box flat
+    // inside it — so the box always lines up square with the track
+    const holder = new THREE.Group();
+    holder.position.set(p.x, trackInfo(p.x, p.z, p.idx).y + 0.02, p.z);
+    holder.rotation.y = p.heading;
     const m = new THREE.Mesh(geo, mat);
-    m.rotation.x = -Math.PI / 2; m.rotation.z = -p.heading;
-    m.position.set(p.x, trackInfo(p.x, p.z, p.idx).y + 0.02, p.z);
-    gridBoxes.add(m);
+    m.rotation.x = -Math.PI / 2;
+    holder.add(m);
+    gridBoxes.add(holder);
   }
 }
 
@@ -2626,8 +2631,11 @@ function startGame(mode) {
     sess.mode = 'quali'; sess.running = true; sess.timeLeft = menu.qmin * 60;
     rivalsGroup.visible = true; showTower(true);
     rivals.forEach((r) => { r.u = Math.random(); r.lat = RACE[idxAtU(r.u)]; r.v = V_ALLOW[idxAtU(r.u)] * r.skill * 0.85; r.tire = 'S'; placeRival(r); });
-    state.idx = 0; resetCar(); clearPlayerLaps();
-    flashLap(`QUALIFYING — ${menu.qmin}:00 — set your fastest lap`);
+    // start ~300 m back on the pit straight (just past the Bus Stop) so there's
+    // room to wind up before the line and start the flying lap at speed
+    const qi = ((Math.round((TRACK_LEN - 300) / STEP)) % N + N) % N;
+    state.idx = qi; resetCar(); clearPlayerLaps(); state.prog = qi * STEP;
+    flashLap(`QUALIFYING — ${menu.qmin}:00 — build speed, then set your lap`);
   } else {
     startRace(null);
   }
@@ -2769,8 +2777,10 @@ function frame() {
     camera.position.copy(camPos);
     camera.lookAt(car.position.x, car.position.y + 0.7, car.position.z);
     camera.fov = 46; camera.updateProjectionMatrix();
-  } else if (sess.mode === 'race' && sess.phase === 'lights') {
-    // grid intro: slow low orbit around the car while the lights build
+  } else if (sess.mode === 'race' && sess.phase === 'lights' && sess.lightT < 4) {
+    // grid intro: slow low orbit while the first lights build, then (lightT >= 4)
+    // hand back to the driving view so you settle in and watch the last lights go
+    // out from the cockpit — you get the launch, not a camera cut at lights-out
     const a = sess.lightT * 0.5 + 1.4, R = 11;
     camPos.lerp(new THREE.Vector3(state.x + Math.sin(a) * R, info.y + 2.7, state.z + Math.cos(a) * R), 1 - Math.exp(-dt * 4));
     camera.position.copy(camPos);
