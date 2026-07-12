@@ -21,14 +21,15 @@ const IS_TOUCH = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPo
 // graphics quality (lower tiers drop the heavy passes so phones don't crash):
 //   min    = "potato": sub-native resolution, 30fps cap, sparse forest, no post
 //   low    = direct render, no post/env/shadows/mirror, native 1x pixels
-//   medium = bloom + colour grade + env + shadows (no SMAA, no mirror)
-//   high   = everything (+ SMAA anti-aliasing + rear-view mirror)
-// pr = max device-pixel-ratio, trees = forest-density multiplier, fps = render
-// cap (0 = uncapped), fog = far-plane draw distance.
+//   medium = bloom + colour grade + env + shadows + rear-view mirror (no SMAA)
+//   high   = everything (+ SMAA anti-aliasing)
+// rear-view mirror is medium+ only: it re-renders the scene each frame, too heavy
+// for the low-power tiers. pr = max device-pixel-ratio, trees = forest-density
+// multiplier, fps = render cap (0 = uncapped), fog = far-plane draw distance.
 const QCFG = {
   min:    { pr: 0.7, post: false, smaa: false, rear: false, shadow: false, trees: 0.22, fps: 30, fog: 2200 },
   low:    { pr: 1.0, post: false, smaa: false, rear: false, shadow: false, trees: 1.0,  fps: 0,  fog: 4200 },
-  medium: { pr: 1.5, post: true,  smaa: false, rear: false, shadow: true,  trees: 1.0,  fps: 0,  fog: 4200 },
+  medium: { pr: 1.5, post: true,  smaa: false, rear: true,  shadow: true,  trees: 1.0,  fps: 0,  fog: 4200 },
   high:   { pr: IS_TOUCH ? 1.6 : 2, post: true, smaa: true, rear: true, shadow: true, trees: 1.0, fps: 0, fog: 4200 },
 };
 let QUALITY = localStorage.getItem('ardennes.quality') || (IS_TOUCH ? 'low' : 'high');
@@ -283,7 +284,7 @@ function renderRearView() {
   _rvLook.set(0, 1.05, -32).applyMatrix4(car.matrixWorld);      // ~32 m back, angled down
   rearCam.position.copy(_rvEye); rearCam.up.set(0, 1, 0); rearCam.lookAt(_rvLook);
   renderer.setRenderTarget(rearRT); renderer.clear(); renderer.render(scene, rearCam); renderer.setRenderTarget(null);
-  const w = innerWidth, h = innerHeight;
+  const w = vpW(), h = vpH();   // match the renderer's visible-viewport size, else the strip lands off-screen on mobile
   const sw = Math.min(460, w * 0.42), sh = sw * RVH / RVW, sx = (w - sw) / 2, sy = h - sh - 54;
   renderer.autoClear = false;
   renderer.setViewport(sx, sy, sw, sh); renderer.setScissor(sx, sy, sw, sh); renderer.setScissorTest(true);
