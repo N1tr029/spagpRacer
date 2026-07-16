@@ -138,7 +138,7 @@
   #tcReset { left: 50%; transform: translateX(calc(-50% - 84px)); }
   #tcFull { left: 50%; transform: translateX(calc(-50% + 84px)); font-size: 18px; }
   #tcCam { left: 16px; bottom: 130px; }
-  body.touch #help, body.touch #mfd, body.touch #tirebox, body.touch #tower { display: none; }   /* declutter the phone HUD */
+  body.touch #help, body.touch #mfd, body.touch #tirebox, body.touch #tower, body.touch #telem { display: none; }   /* declutter the phone HUD */
   body.touch #speedo { bottom: 220px; right: 20px; }                          /* lift the readout above the pedals */
   /* scale the desktop-sized HUD down for small phone screens */
   body.touch #speed { font-size: 38px; } body.touch #gear { font-size: 19px; } body.touch #rpmbar { width: 140px; } body.touch #rpm { font-size: 11px; }
@@ -280,6 +280,11 @@
   #mfd .minfo { display: flex; gap: 9px; margin-top: 6px; font-size: 10px; letter-spacing: .3px; opacity: .8; }
   #mfd .minfo b { color: #ffd34d; font-weight: 800; }
 
+  /* telemetry overlay (toggle: T) */
+  #telem { position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
+           background: rgba(10,14,20,.78); border-radius: 8px; display: none; }
+  #telem.show { display: block; }
+
   #flag { left: 50%; transform: translateX(-50%); top: 188px; font-size: 15px; font-weight: 900; letter-spacing: 3px;
     padding: 4px 16px; border-radius: 6px; opacity: 0; transition: opacity .2s; }
   #flag.blue { opacity: 1; background: #1560d0; color: #fff; }
@@ -389,8 +394,9 @@
     <div class="minfo"><span>FUEL <b id="mFuel">100</b></span><span>ENG <b id="mMix">STD</b></span><span>BB <b id="mBB">62%</b></span></div>
   </div>
   <canvas id="minimap" width="190" height="190"></canvas>
+  <canvas id="telem" width="460" height="264"></canvas>
   <div class="hud" id="help">
-    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>Shift</b> ERS boost &nbsp; <b>Space</b> DRS &nbsp; <b>E</b> ERS &nbsp; <b>Q</b> engine &nbsp; <b>[ ]</b> brake bias &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>F</b> rear view &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>1/2/3</b> tyres &nbsp; <b>O</b> setup &nbsp; <b>Esc</b> menu &nbsp; <b>M</b> mute
+    <b>W/&uarr;</b> throttle &nbsp; <b>S/&darr;</b> brake &nbsp; <b>A D/&larr;&rarr;</b> steer &nbsp; <b>Shift</b> ERS boost &nbsp; <b>Space</b> DRS &nbsp; <b>E</b> ERS &nbsp; <b>Q</b> engine &nbsp; <b>[ ]</b> brake bias &nbsp; <b>R</b> reset &nbsp; <b>C</b> camera &nbsp; <b>F</b> rear view &nbsp; <b>L</b> line &nbsp; <b>X</b> assists &nbsp; <b>1/2/3</b> tyres &nbsp; <b>O</b> setup &nbsp; <b>T</b> telemetry &nbsp; <b>Esc</b> menu &nbsp; <b>M</b> mute
   </div>
   <div id="settings">
     <div class="tabs">

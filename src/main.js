@@ -802,11 +802,14 @@ const crowdTex = (() => {
     ctx.fillStyle = cols[Math.floor(rand() * cols.length)];
     ctx.fillRect(Math.floor(rand() * 256), Math.floor(rand() * 64), 3, 2);
   }
+  // concrete stair aisles splitting the crowd into seating blocks
+  ctx.fillStyle = '#646c76';
+  for (const ax of [60, 126, 192]) ctx.fillRect(ax, 0, 7, 64);
   const t = new THREE.CanvasTexture(cnv);
   t.magFilter = THREE.NearestFilter;
   return t;
 })();
-const crowdM = new THREE.MeshStandardMaterial({ map: crowdTex, roughness: 1 });
+const crowdM = new THREE.MeshStandardMaterial({ map: crowdTex, roughness: 1, emissive: 0x30363d });
 // grandstands at their real mapped positions (OSM building=grandstand
 // polygons around the circuit: Tribune F1, Raidillon, Endurance, Silver, …)
 const standNear = (x, z) => {
@@ -815,8 +818,12 @@ const standNear = (x, z) => {
   return b;
 };
 const standStruct = new THREE.MeshStandardMaterial({ color: 0x363c44, roughness: 0.9 });
-const standRoof = new THREE.MeshStandardMaterial({ color: 0x565d67, roughness: 0.85 });
-const standFascia = new THREE.MeshStandardMaterial({ color: 0xd4001a, roughness: 0.55 });
+const standRoof = new THREE.MeshStandardMaterial({ color: 0xe9edf1, roughness: 0.5, side: THREE.DoubleSide, emissive: 0x1b1d20 });
+const standSteel = new THREE.MeshStandardMaterial({ color: 0x767e88, roughness: 0.55 });
+const standAds = ['ARDENNES GP', 'PIRELLI', 'DHL', 'ARAMCO'];
+const flagM = ['#e8483a', '#3a9bdc', '#f5d033', '#33c46a', '#f0842e'].map(c =>
+  new THREE.MeshBasicMaterial({ color: c, side: THREE.DoubleSide }));
+let standNo = 0;
 for (const st of trackData.stands) {
   const len = Math.max(28, Math.min(st.len, 175));
   // perpendicular pointing AWAY from the track — the seating rakes up that way
@@ -833,19 +840,44 @@ for (const st of trackData.stands) {
     m.position.set(0, 0.6 + t * stepUp, -D / 2 + 0.4 + t * stepBack);
     m.castShadow = true; grp.add(m);
   }
-  // back wall + side walls
-  const back = new THREE.Mesh(new THREE.BoxGeometry(len + 3, topY + 5, 1.2), standStruct);
-  back.position.set(0, (topY + 5) / 2, D / 2 + 0.6); back.castShadow = true; grp.add(back);
+  // back wall (under the roof's low edge) + low side wings so light gets in
+  const back = new THREE.Mesh(new THREE.BoxGeometry(len + 3, topY + 3.6, 1.2), standStruct);
+  back.position.set(0, (topY + 3.6) / 2, D / 2 + 0.6); back.castShadow = true; grp.add(back);
   for (const sx of [-1, 1]) {
-    const sw = new THREE.Mesh(new THREE.BoxGeometry(1, topY + 5, D + 1.2), standStruct);
-    sw.position.set(sx * (len / 2 + 0.5), (topY + 5) / 2, 0.3); grp.add(sw);
+    const sw = new THREE.Mesh(new THREE.BoxGeometry(1, topY + 0.5, D + 1.2), standStruct);
+    sw.position.set(sx * (len / 2 + 0.5), (topY + 0.5) / 2, 0.3); grp.add(sw);
   }
-  // roof canopy cantilevered forward over the seating + red sponsor fascia
-  const roofDepth = D * 0.85;
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(len + 3, 0.5, roofDepth), standRoof);
-  roof.position.set(0, topY + 4.5, D / 2 - roofDepth / 2 + 0.6); roof.castShadow = true; grp.add(roof);
-  const fascia = new THREE.Mesh(new THREE.BoxGeometry(len + 3, 1.3, 0.4), standFascia);
-  fascia.position.set(0, topY + 4.2, D / 2 - roofDepth + 0.6); grp.add(fascia);
+  // white canopy roof, tilted up toward the track for sightlines (Spa's
+  // tribunes read as bright white decks from the circuit), on steel legs
+  const roofDepth = D * 0.95, rise = 2.2;
+  const zF = D / 2 - roofDepth + 0.6;                 // front (track-side) roof edge
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(len + 3, 0.35, roofDepth + 1), standRoof);
+  roof.position.set(0, topY + 5.1, D / 2 - roofDepth / 2 + 0.6);
+  roof.rotation.x = Math.atan2(rise, roofDepth);      // +x rotation lifts the -z (front) edge
+  roof.castShadow = true; grp.add(roof);
+  // slim steel legs holding the high front edge
+  const legH = topY + 6.0, legN = Math.max(2, Math.round(len / 13));
+  for (let k = 0; k < legN; k++) {
+    const lx = -len / 2 + 2 + (len - 4) * (legN === 1 ? 0.5 : k / (legN - 1));
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.35, legH, 0.35), standSteel);
+    leg.position.set(lx, legH / 2, zF + 0.5); grp.add(leg);
+  }
+  // sponsor fascia hanging off the roof's leading edge
+  const ad = standAds[standNo % standAds.length];
+  const fascia = new THREE.Mesh(new THREE.BoxGeometry(len + 3, 1.8, 0.35),
+    new THREE.MeshStandardMaterial({ map: bannerTexture(ad, ad === 'ARDENNES GP' ? '#d4001a' : '#0f1420'), roughness: 0.55 }));
+  fascia.position.set(0, topY + 5.85, zF); grp.add(fascia);
+  // pennant flags along the roofline of the big tribunes
+  if (len >= 100) {
+    for (let k = 0; k < 5; k++) {
+      const fx = -len / 2 + 10 + (len - 20) * k / 4;
+      const pole = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.6, 0.12), standSteel);
+      pole.position.set(fx, topY + 7.5, zF + 0.5); grp.add(pole);
+      const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.8), flagM[k % flagM.length]);
+      flag.position.set(fx + 0.8, topY + 8.4, zF + 0.5); grp.add(flag);
+    }
+  }
+  standNo++;
   scene.add(grp);
 }
 // ---------------------------------------------------------------------------
@@ -1374,6 +1406,8 @@ function updateCarSystems(dt) {
     else flashLap('TRACK LIMITS — lap time deleted');
   }
   s.wasOff = off;
+
+  telemSample(dt);
 }
 function physStep(dt) {
   updatePitState();
@@ -1595,6 +1629,7 @@ addEventListener('keydown', e => {
     case 'KeyD': case 'ArrowRight': input.right = true; break;
     case 'KeyR': resetCar(); break;
     case 'KeyC': cycleCam(); break;   // chase -> cockpit -> nose pod
+    case 'KeyT': toggleTelemetry(); break;
     case 'KeyV':
       tvMode = !tvMode;
       flashLap(tvMode ? 'BROADCAST CAMERAS' : 'DRIVER CAMERA');
@@ -1752,6 +1787,134 @@ function gearAt(kmh) {
 }
 
 let cornerShown = '';
+// ---------------------------------------------------------------------------
+// Telemetry overlay (toggle: T) — an engineer's panel: input + speed traces,
+// live delta-to-best graph, tyre temps/wear, ERS/fuel, and a g-force meter.
+// All simulated state, drawn to a single 2D canvas at ~30 Hz.
+// ---------------------------------------------------------------------------
+let telemOn = false;
+const TELEM_N = 300;                       // 10 s of samples at 30 Hz
+const TELEM = {
+  i: 0, acc: 0, lastDraw: 0,
+  thr: new Float32Array(TELEM_N), brk: new Float32Array(TELEM_N),
+  str: new Float32Array(TELEM_N), spd: new Float32Array(TELEM_N),
+};
+function telemSample(dt) {
+  TELEM.acc += dt;
+  while (TELEM.acc >= 1 / 30) {
+    TELEM.acc -= 1 / 30;
+    TELEM.thr[TELEM.i] = state.thr; TELEM.brk[TELEM.i] = state.brk; TELEM.str[TELEM.i] = state.steer;
+    TELEM.spd[TELEM.i] = Math.hypot(state.vx, state.vz) * 3.6;
+    TELEM.i = (TELEM.i + 1) % TELEM_N;
+  }
+}
+function toggleTelemetry() {
+  telemOn = !telemOn;
+  $('telem').classList.toggle('show', telemOn);
+  flashLap(telemOn ? 'TELEMETRY ON' : 'TELEMETRY OFF');
+}
+const tmx = $('telem').getContext('2d');
+function drawTelemetry(now) {
+  if (now - TELEM.lastDraw < 32) return;   // ~30 Hz is plenty for a strip chart
+  TELEM.lastDraw = now;
+  const s = state, ctx = tmx, W = 460, H = 264, L = 10, R = W - 10;
+  ctx.clearRect(0, 0, W, H);
+  const label = (t, x, y, col = 'rgba(255,255,255,.5)', align = 'left', size = 9) => {
+    ctx.fillStyle = col; ctx.textAlign = align; ctx.font = `700 ${size}px "Helvetica Neue", Arial, sans-serif`; ctx.fillText(t, x, y);
+  };
+  label('TELEMETRY', L, 14, 'rgba(255,255,255,.55)');
+
+  // --- traces band: throttle / brake / steering + speed --------------------
+  const ty = 22, th = 82;
+  ctx.strokeStyle = 'rgba(255,255,255,.09)'; ctx.lineWidth = 1;
+  for (let f = 0; f <= 4; f++) { const y = ty + th * f / 4; ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(R, y); ctx.stroke(); }
+  const plot = (arr, map, col, wd) => {
+    ctx.beginPath();
+    for (let k = 0; k < TELEM_N; k++) {
+      const v = Math.max(0, Math.min(1, map(arr[(TELEM.i + k) % TELEM_N])));
+      const x = L + (k / (TELEM_N - 1)) * (R - L), y = ty + th - v * th;
+      k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.strokeStyle = col; ctx.lineWidth = wd; ctx.stroke();
+  };
+  plot(TELEM.str, v => 0.5 - v * 0.5, 'rgba(255,255,255,.38)', 1);
+  plot(TELEM.spd, v => v / 360, '#4fc3e8', 1.2);
+  plot(TELEM.brk, v => v, '#e5342b', 1.4);
+  plot(TELEM.thr, v => v, '#2ec26a', 1.4);
+  label('THR', R - 108, 14, '#2ec26a', 'left');
+  label('BRK', R - 82, 14, '#e5342b', 'left');
+  label('SPD', R - 56, 14, '#4fc3e8', 'left');
+  label('STR', R - 28, 14, 'rgba(255,255,255,.45)', 'left');
+
+  // --- delta-to-best band ----------------------------------------------------
+  const dy = 116, dh = 54, dmid = dy + dh / 2;
+  ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.beginPath(); ctx.moveTo(L, dmid); ctx.lineTo(R, dmid); ctx.stroke();
+  label('DELTA TO BEST', L, dy - 2);
+  const pts = [];
+  if (s.running && s.bestT) {
+    for (let j = s.idx, k = 0; k < 260; k++, j = (j - 1 + N) % N) {
+      if (s.curT[j] < 0 || s.bestT[j] < 0) break;
+      pts.push((s.curT[j] - s.bestT[j]) / 1000);
+    }
+    pts.reverse();
+  }
+  if (pts.length > 1) {
+    let mx = 0.4; for (const d of pts) mx = Math.max(mx, Math.abs(d));
+    const sc = Math.min(mx, 2.5);
+    ctx.beginPath();
+    for (let k = 0; k < pts.length; k++) {
+      const x = R - (pts.length - 1 - k) * ((R - L) / 260);
+      const y = dmid + Math.max(-1, Math.min(1, pts[k] / sc)) * (dh / 2 - 2);
+      k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.strokeStyle = '#e8c43a'; ctx.lineWidth = 1.4; ctx.stroke();
+    const d = pts[pts.length - 1];
+    label((d >= 0 ? '+' : '−') + Math.abs(d).toFixed(2), R, dy - 2, d >= 0 ? '#ff7070' : '#7dffa0', 'right', 12);
+  } else {
+    label('NO REFERENCE LAP', (L + R) / 2, dmid + 3, 'rgba(255,255,255,.28)', 'center');
+  }
+
+  // --- bottom band: tyres | ERS + fuel | g-meter -----------------------------
+  const by = 186;
+  const tempCol = t => t < 75 ? '#3a7bd6' : t < 88 ? '#2a9d8f' : t < 110 ? '#2ec26a' : t < 125 ? '#e8993a' : '#e5342b';
+  label('TYRES', L, by - 4);
+  const tid = [['FL', 0], ['FR', 1], ['RL', 2], ['RR', 3]];
+  for (const [nm, i] of tid) {
+    const x = L + (i % 2) * 41, y = by + (i >> 1) * 33;
+    ctx.fillStyle = tempCol(s.tireTemp[i]); ctx.fillRect(x, y, 38, 30);
+    label(Math.round(s.tireTemp[i]), x + 19, y + 15, '#06090d', 'center', 11);
+    label(nm, x + 19, y + 25, 'rgba(6,9,13,.6)', 'center', 7);
+  }
+  const tc = TCOMP[s.tire.compound] || TCOMP.M;
+  label(tc.short, 102, by + 14, tc.col, 'left', 16);
+  label('WEAR ' + Math.round(s.tire.wear * 100) + '%', 100, by + 28);
+  ctx.fillStyle = 'rgba(255,255,255,.14)'; ctx.fillRect(100, by + 34, 52, 5);
+  ctx.fillStyle = s.tire.wear > 0.8 ? '#e5342b' : s.tire.wear > 0.55 ? '#e8c43a' : '#2ec26a';
+  ctx.fillRect(100, by + 34, 52 * Math.max(0, 1 - s.tire.wear), 5);
+  label('TEMP GRIP ' + Math.round((s.tempGrip || 1) * 100) + '%', 100, by + 52);
+
+  label('ERS', 190, by - 4);
+  ctx.fillStyle = 'rgba(255,255,255,.14)'; ctx.fillRect(190, by + 2, 110, 9);
+  ctx.fillStyle = '#25e05a'; ctx.fillRect(190, by + 2, 110 * s.ers, 9);
+  label(Math.round(s.ers * 100) + '%', 305, by + 10);
+  label(s.ersOT ? 'OVERTAKE' : s.ersDeploy ? 'DEPLOY' : s.brk > 0.05 ? 'HARVEST' : ['HARVEST MODE', 'BALANCED'][s.ersMode] || '',
+    190, by + 24, s.ersOT ? '#ff6060' : s.ersDeploy ? '#25e05a' : '#4fc3e8');
+  label('FUEL ' + Math.max(0, s.fuel).toFixed(1) + ' kg', 190, by + 42);
+  label('BB ' + Math.round(s.brakeBias * 100) + '%   MIX ' + ['LEAN', 'STD', 'RICH'][s.fuelMix], 190, by + 56);
+
+  const gx = 410, gy = by + 26, gr = 30;
+  ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1;
+  for (const rr of [gr / 2, gr]) { ctx.beginPath(); ctx.arc(gx, gy, rr, 0, 6.284); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(gx - gr, gy); ctx.lineTo(gx + gr, gy); ctx.moveTo(gx, gy - gr); ctx.lineTo(gx, gy + gr); ctx.stroke();
+  const fwdX = Math.sin(s.heading), fwdZ = Math.cos(s.heading);
+  const vAlong = s.vx * fwdX + s.vz * fwdZ;
+  const gLat = (s.r * vAlong) / 9.81, gAx = s.axSm / 9.81;
+  const px = gx + Math.max(-1, Math.min(1, gLat / 5)) * gr, py = gy + Math.max(-1, Math.min(1, gAx / 5)) * gr;
+  ctx.fillStyle = '#ffd34d'; ctx.beginPath(); ctx.arc(px, py, 3.5, 0, 6.284); ctx.fill();
+  label('5G', gx + gr + 4, gy + 3);
+  label(Math.abs(gLat).toFixed(1) + 'G LAT', gx, gy + gr + 12, 'rgba(255,255,255,.5)', 'center');
+}
+
 function updateHUD(speedKmh) {
   $('speed').textContent = Math.round(speedKmh);
   const g = gearAt(speedKmh);
@@ -2181,7 +2344,7 @@ const rivals = RIVALS_DEF.map((def) => {
   // skill scales corner speed (fastest driver = highest); aggression drives
   // defending/overtaking; react = launch reaction delay at the start.
   const skill = 1.0 - (def.lap - 136) / 12 * 0.09;
-  return { def, mesh, u: 0, v: 0, lat: 0, latV: 0, gridLat: null, skill, tire: 'M',
+  return { def, mesh, u: 0, v: 0, lat: 0, latV: 0, latT: 0, latVS: 0, passDir: 0, sideBias: 0, gridLat: null, skill, tire: 'M',
     aggr: 0.3 + Math.random() * 0.6, react: 0.12 + Math.random() * 0.35, errT: 3 + Math.random() * 6, errUntil: 0 };
 });
 const GRID_BLEND = 4.5; // seconds to merge from grid box onto the racing line
@@ -2194,8 +2357,12 @@ function placeRival(r) {
   const cx = a[0] + (b[0] - a[0]) * frac + n[0] * lat;
   const cz = a[2] + (b[2] - a[2]) * frac + n[1] * lat;
   r.mesh.position.set(cx, trackInfo(cx, cz, i0).y, cz);
-  // heading = track tangent, nudged by lateral movement so darts read naturally
-  r.mesh.rotation.y = Math.atan2(b[0] - a[0], b[2] - a[2]) + (r.latV || 0) * 0.03;
+  // heading = smoothed tangent interpolated across the segment (the raw
+  // per-segment chord snaps a few degrees at every point crossing), plus a
+  // SMOOTHED, clamped lateral-velocity nudge so darts read without twitching
+  const t0 = tangents[i0], t1 = tangents[i1];
+  const nudge = Math.max(-0.09, Math.min(0.09, (r.latVS || 0) * 0.03));
+  r.mesh.rotation.y = Math.atan2(t0[0] + (t1[0] - t0[0]) * frac, t0[1] + (t1[1] - t0[1]) * frac) + nudge;
 }
 
 // ---------------------------------------------------------------------------
@@ -2234,31 +2401,58 @@ function updateRivals(dt) {
     if (racing && startMerge < 1 && r.gridLat != null) target = r.gridLat * (1 - startMerge) + RACE[i] * startMerge;
     const tight = Math.max(0.28, 1 - Math.abs(CURV[i]) * 22);   // hug the line in tight corners
     if (racing && startMerge > 0.35) {                          // racecraft only once away from the grid
+      let passing = false;
       for (const o of cars) {
         if (o.r === r) continue;
         const ds = (o.u - r.u) * TRACK_LEN;
         if (ds < -5 || ds > 16) continue;
         const dlat = o.lat - r.lat;
-        if (ds > 2.5 && Math.abs(dlat) < 3.2 && o.v < r.v - 1) target += (r.lat >= o.lat ? 1 : -1) * (2.6 + r.aggr * 1.5) * tight;
-        else if (Math.abs(ds) <= 4 && Math.abs(dlat) < 3.0) target += (dlat > 0 ? -1 : 1) * 2.2 * tight;
+        if (ds > 2.5 && Math.abs(dlat) < 3.2 && o.v < r.v - 1) {
+          // commit to a passing side and keep it — re-deciding every frame
+          // makes the car wag between the two options
+          if (!r.passDir) r.passDir = r.lat >= o.lat ? 1 : -1;
+          passing = true;
+          target += r.passDir * (2.6 + r.aggr * 1.5) * tight;
+        } else if (Math.abs(ds) <= 4 && Math.abs(dlat) < 3.0) {
+          // leave room — with hysteresis: only re-pick the side once the other
+          // car is clearly to one side, so dlat crossing 0 can't flip-flop us
+          if (Math.abs(dlat) > 0.35) r.sideBias = dlat > 0 ? -1 : 1;
+          target += (r.sideBias || (dlat > 0 ? -1 : 1)) * 2.2 * tight;
+        }
       }
+      if (!passing) r.passDir = 0;
     }
     target = Math.max(-(HWm[i] - 1.0), Math.min(HWp[i] - 1.0, target));
-    const nl = r.lat + Math.max(-6 * dt, Math.min(6 * dt, target - r.lat));
-    r.latV = (nl - r.lat) / Math.max(dt, 1e-3); r.lat = nl;
+    // low-pass the target, then slew toward it: single-frame target jumps
+    // (racecraft toggling on/off) become gentle drifts instead of darts
+    r.latT += (target - r.latT) * Math.min(1, dt * 4);
+    const nl = r.lat + Math.max(-6 * dt, Math.min(6 * dt, r.latT - r.lat));
+    r.latV = (nl - r.lat) / Math.max(dt, 1e-3);
+    r.latVS += (r.latV - r.latVS) * Math.min(1, dt * 6);   // smoothed copy for the heading nudge
+    r.lat = nl;
   }
 
   for (const r of rivals) r.u += (r.v * dt) / TRACK_LEN;   // advance by speed
 
-  // rival<->rival collision in (u,lat) space — momentum both ways
+  // rival<->rival collision in (u,lat) space — momentum both ways. Overlap is
+  // resolved GRADUALLY (a fraction per frame, dt-scaled): resolving the full
+  // half-overlap in one frame teleports both cars and the pack visibly vibrates
   const LEN = 4.6, WID = 1.9;
+  const relax = Math.min(0.5, dt * 7);
   for (let a = 0; a < rivals.length; a++) for (let b = a + 1; b < rivals.length; b++) {
     const r = rivals[a], o = rivals[b];
     const ds = (o.u - r.u) * TRACK_LEN, dlat = o.lat - r.lat;
     if (Math.abs(ds) < LEN && Math.abs(dlat) < WID) {
       const ovLat = WID - Math.abs(dlat), ovLon = LEN - Math.abs(ds);
-      if (ovLat <= ovLon) { const p = ovLat / 2 * (dlat >= 0 ? 1 : -1); o.lat += p; r.lat -= p; r.v *= 0.99; o.v *= 0.99; }
-      else { const p = (ovLon / 2) / TRACK_LEN; if (ds >= 0) { o.u += p; r.u -= p; r.v = Math.min(r.v, o.v); } else { r.u += p; o.u -= p; o.v = Math.min(o.v, r.v); } }
+      if (ovLat <= ovLon) {
+        const p = ovLat * relax * (dlat >= 0 ? 1 : -1);
+        o.lat += p; o.latT += p; r.lat -= p; r.latT -= p;
+        r.v *= 0.99; o.v *= 0.99;
+      } else {
+        const p = (ovLon * relax) / TRACK_LEN;
+        if (ds >= 0) { o.u += p; r.u -= p; r.v = Math.min(r.v, o.v); }
+        else { r.u += p; o.u -= p; o.v = Math.min(o.v, r.v); }
+      }
     }
   }
 
@@ -2275,7 +2469,8 @@ function updateRivals(dt) {
         if (vn < 0) { state.vx -= nx * vn * 1.3; state.vz -= nz * vn * 1.3; }
         state.vx *= 0.95; state.vz *= 0.95;
         const ni = normals[idxAtU(r.u)];
-        r.lat += -(nx * ni[0] + nz * ni[1]) * push * 0.55;
+        const knock = -(nx * ni[0] + nz * ni[1]) * push * 0.55;
+        r.lat += knock; r.latT += knock;
         r.v *= 0.95;
         placeRival(r);
       }
@@ -2562,7 +2757,7 @@ function startRace(playerGrid) {
       state.r = 0; state.thr = 0; state.brk = 0; state.ax = 0; state.axSm = 0;
       clearPlayerLaps(); state.prog = gp;
     } else {
-      ent.u = gp / TRACK_LEN - 1; ent.gridLat = lat; ent.lat = lat; ent.v = 0; placeRival(ent);
+      ent.u = gp / TRACK_LEN - 1; ent.gridLat = lat; ent.lat = lat; ent.latT = lat; ent.latVS = 0; ent.v = 0; placeRival(ent);
     }
   });
   flashLap(`RACE — ${menu.laps} laps — lights out and away we go`);
@@ -2703,7 +2898,7 @@ function startGame(mode) {
   } else if (mode === 'quali') {
     sess.mode = 'quali'; sess.running = true; sess.timeLeft = menu.qmin * 60;
     rivalsGroup.visible = true; showTower(true);
-    rivals.forEach((r) => { r.u = Math.random(); r.lat = RACE[idxAtU(r.u)]; r.v = V_ALLOW[idxAtU(r.u)] * r.skill * 0.85; r.tire = 'S'; placeRival(r); });
+    rivals.forEach((r) => { r.u = Math.random(); r.lat = RACE[idxAtU(r.u)]; r.latT = r.lat; r.latVS = 0; r.v = V_ALLOW[idxAtU(r.u)] * r.skill * 0.85; r.tire = 'S'; placeRival(r); });
     // start ~300 m back on the pit straight (just past the Bus Stop) so there's
     // room to wind up before the line and start the flying lap at speed
     const qi = ((Math.round((TRACK_LEN - 300) / STEP)) % N + N) % N;
@@ -2960,6 +3155,7 @@ function frame() {
 
   const kmh = speed * 3.6;
   const rpmFrac = updateHUD(kmh);
+  if (telemOn) drawTelemetry(now);
   // rev lights: wheel LEDs + HUD shift strip, flashing blue at the limiter
   const lit = Math.round(rpmFrac * 12);
   const limiterFlash = rpmFrac > 0.985 && Math.floor(now / 55) % 2 === 0;
@@ -3039,7 +3235,7 @@ frame();
 
 // debug/testing hook
 window.__game = { state, input, trackInfo, tangents, resetCar, P, N, STEP, scene, CURV, camera, camPos, renderer, physStep, rivals, sess, placeRival, car,
-  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, showPodium, podium, endRace, composer, renderRearView, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone,
+  placeInGarage, updateHUD, updateSession, updateRivals, startRace, drawMinimap, updateTower, updateCarSystems, updateShiftLights, updatePitCrew, pitCrew, TV_CAMS, showPodium, podium, endRace, composer, renderRearView, menu, startGame, V_ALLOW, RACE, TRACK_LEN, idxAtU, DRS_ZONES, inDrsZone, drawTelemetry, toggleTelemetry, TELEM,
   pit: { pitPath, pitBoxes, PLAYER_BOX, PIT_NN, PIT_TAPER, pitInfo, pitKofTrack, PIT_LEN, PIT_LIMIT, updatePitState, updatePitStop, TCOMP } };
 
 function onResize() {
